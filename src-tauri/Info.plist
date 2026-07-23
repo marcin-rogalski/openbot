@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Defense-in-depth for a long-running tray app: opt out of macOS "automatic"
+      and "sudden" termination so the OS won't abruptly kill the process (e.g.
+      under memory pressure, or once background work lands). This is NOT what
+      keeps the app alive when the window is hidden — that's the Quit AppleEvent
+      handler in macos.rs; these keys just avoid ungraceful kills on top of it.
+    -->
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+</dict>
+</plist>

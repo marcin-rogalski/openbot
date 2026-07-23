@@ -1,23 +1,22 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Runtime,
+    AppHandle, Runtime,
 };
 
-use crate::window::MAIN_WINDOW_LABEL;
+use crate::window::show_window;
 
-/// Builds the menu-bar tray icon: left-click toggles the main window,
-/// right-click (or the platform default) shows a small menu.
+/// Builds the menu-bar tray icon: left-click opens the main window,
+/// right-click shows a menu with just "Quit" for now.
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, "hide", "Hide Window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+    let menu = Menu::with_items(app, &[&quit])?;
 
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())
-        // macOS: render as a template image so it adapts to light/dark menu bar.
-        .icon_as_template(true)
+        // Not rendered as a template image: template icons can go blank on
+        // hover once the app has no dock tile (Accessory activation policy),
+        // which is exactly our state whenever the window is hidden.
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -27,28 +26,13 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let _ = crate::window::toggle_visibility(&window);
-                }
+                show_window(tray.app_handle());
             }
         })
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            "hide" => {
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let _ = window.hide();
-                }
-            }
-            "quit" => {
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "quit" {
                 app.exit(0);
             }
-            _ => {}
         })
         .build(app)?;
 

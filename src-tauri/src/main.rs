@@ -1,21 +1,27 @@
 // Prevents an additional console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+mod macos;
 mod tray;
 mod window;
+
+use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            macos::intercept_quit_apple_event();
             tray::create_tray(app.handle())?;
             Ok(())
         })
-        // Closing the window hides it instead of quitting the whole app,
-        // since the app is meant to keep running from the tray.
+        // Closing the window hides it (and drops the dock icon) instead of
+        // quitting, so the app keeps running from the tray.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
+                window::hide_window(window.app_handle());
                 api.prevent_close();
             }
         })
