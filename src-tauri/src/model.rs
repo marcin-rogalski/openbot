@@ -101,6 +101,28 @@ pub async fn should_engage(cfg: &BotConfig, context: &str, message: &str) -> boo
     }
 }
 
+/// A tool call parsed out of the model's ReAct output.
+pub struct ToolCall {
+    pub tool: String,
+    pub args: serde_json::Value,
+}
+
+/// Find a `TOOL_CALL { … }` directive in the model's text and extract the tool
+/// name + args. Tolerates surrounding text and trailing content after the JSON.
+pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
+    let idx = text.find("TOOL_CALL")?;
+    let after = &text[idx + "TOOL_CALL".len()..];
+    let brace = after.find('{')?;
+    // Read exactly one JSON value starting at the first brace, ignoring the rest.
+    let value = serde_json::Deserializer::from_str(&after[brace..])
+        .into_iter::<serde_json::Value>()
+        .next()?
+        .ok()?;
+    let tool = value.get("tool")?.as_str()?.to_string();
+    let args = value.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+    Some(ToolCall { tool, args })
+}
+
 async fn request(
     cfg: &BotConfig,
     messages: Vec<ChatMessage>,

@@ -12,14 +12,17 @@ use serenity::all::{
 use serenity::async_trait;
 use tauri::{AppHandle, Manager};
 
-use crate::bot::{self, ActivityKind, BotManager};
+use crate::bot::{self, ActivityKind, BotManager, Decision, Policy};
 use crate::config::BotConfig;
 use crate::model::{self, ChatMessage};
+use crate::tools;
 
 /// How many recent channel messages to send as context.
 const HISTORY_LIMIT: u8 = 8;
 /// Discord's hard message length limit.
 const DISCORD_MAX: usize = 2000;
+/// Max model↔tool round-trips per reply.
+const MAX_TOOL_ITERS: usize = 6;
 
 /// An open follow-up window for a channel: the bot recently replied here, so it
 /// considers the next few messages from anyone as possibly continuing the
@@ -83,38 +86,120 @@ impl Handler {
             channel.clone(),
             humanize(&msg.content, &msg.mentions, bot_id, bot_name),
         );
-        bot::emit_activity(
-            &self.app,
-            ActivityKind::ModelCall,
-            None,
-            None,
-            format!("→ {}", self.cfg.model_name),
-        );
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
-        let messages = build_messages(&self.cfg, history, msg, bot_id, bot_name);
-        match model::chat(&self.cfg, messages).await {
-            Ok((reply, metrics)) => {
-                bot::emit_metrics(&self.app, metrics);
-                let reply = if reply.trim().is_empty() {
-                    "(the model returned an empty response)".to_string()
-                } else {
-                    reply
-                };
-                bot::emit_activity(
-                    &self.app,
-                    ActivityKind::Reply,
-                    Some("openbot".into()),
-                    channel,
-                    reply.clone(),
-                );
-                if let Err(e) = msg.channel_id.say(&ctx.http, truncate(&reply, DISCORD_MAX)).await {
-                    bot::emit_log(&self.app, format!("Failed to send reply: {e}"));
+        // ReAct loop: model → (maybe) tool call → result → model → … → answer.
+        // Always ends by sending *something* to Discord (final answer, error, or
+        // a fallback) so the bot never goes silent mid-loop.
+        let mut messages = build_messages(&self.cfg, history, msg, bot_id, bot_name);
+        let mut final_text: Option<String> = None;
+        let mut error: Option<String> = None;
+
+        for _ in 0..MAX_TOOL_ITERS {
+            bot::emit_activity(
+                &self.app,
+                ActivityKind::ModelCall,
+                None,
+                None,
+                format!("→ {}", self.cfg.model_name),
+            );
+            let (text, metrics) = match model::chat(&self.cfg, messages.clone()).await {
+                Ok(result) => result,
+                Err(e) => {
+                    bot::emit_log(&self.app, format!("Model error: {e}"));
+                    error = Some(e);
+                    break;
                 }
-                self.refresh_window(msg);
+            };
+            bot::emit_metrics(&self.app, metrics);
+
+            match model::parse_tool_call(&text) {
+                None => {
+                    final_text = Some(text);
+                    break;
+                }
+                Some(call) => {
+                    let result = self.run_tool(&call).await;
+                    messages.push(ChatMessage::assistant(text));
+                    // Nudge the model to keep going or to wrap up explicitly.
+                    messages.push(ChatMessage::user(format!(
+                        "TOOL_RESULT: {result}\n(If more steps are needed, output the next \
+                         TOOL_CALL; otherwise reply with your final answer to the user.)"
+                    )));
+                    let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+                }
             }
-            Err(e) => bot::emit_log(&self.app, format!("Model error: {e}")),
         }
+
+        let reply = if let Some(e) = error {
+            format!("Sorry — I hit an error while working on that: {e}")
+        } else {
+            let cleaned = final_text.as_deref().map(sanitize_reply).unwrap_or_default();
+            if cleaned.is_empty() {
+                "I ran the tools but didn't produce a final answer.".to_string()
+            } else {
+                cleaned
+            }
+        };
+        bot::emit_activity(
+            &self.app,
+            ActivityKind::Reply,
+            Some("openbot".into()),
+            channel,
+            reply.clone(),
+        );
+        if let Err(e) = msg.channel_id.say(&ctx.http, truncate(&reply, DISCORD_MAX)).await {
+            bot::emit_log(&self.app, format!("Failed to send reply: {e}"));
+        }
+        self.refresh_window(msg);
+    }
+
+    /// Run one parsed tool call, subject to its policy (allow / ask / deny).
+    /// Returns the result string to feed back to the model.
+    async fn run_tool(&self, call: &model::ToolCall) -> String {
+        let name = call.tool.as_str();
+        bot::emit_activity(
+            &self.app,
+            ActivityKind::ToolCall,
+            None,
+            None,
+            format!("{name} {}", call.args),
+        );
+
+        let spec = tools::find(name);
+        let Some(spec) = spec else {
+            return format!("error: unknown tool '{name}'");
+        };
+
+        // Fresh config so an "always allow/deny" set mid-session takes effect now.
+        let cfg = crate::config::load(&self.app);
+        let allowed = match bot::policy_for(&cfg, name, spec.write) {
+            Policy::Allow => true,
+            Policy::Deny => {
+                bot::emit_log(&self.app, format!("{name}: denied by policy"));
+                return "denied by policy".to_string();
+            }
+            Policy::Ask => match bot::request_approval(&self.app, name, &call.args).await {
+                Decision::Approve => true,
+                Decision::Deny => false,
+                Decision::AlwaysAllow => {
+                    crate::config::set_tool_policy(&self.app, name, "allow");
+                    true
+                }
+                Decision::AlwaysDeny => {
+                    crate::config::set_tool_policy(&self.app, name, "deny");
+                    false
+                }
+            },
+        };
+        if !allowed {
+            bot::emit_log(&self.app, format!("{name}: denied"));
+            return "denied by user".to_string();
+        }
+
+        let result = tools::execute(&self.app, &self.cfg, name, &call.args).await;
+        bot::emit_log(&self.app, format!("{name} → {}", first_line(&result)));
+        result
     }
 }
 
@@ -213,8 +298,11 @@ fn build_messages(
          @{bot_name} or replies to you, it is addressed to you — respond to it directly and in \
          character. Do not narrate or summarise the conversation unless you are explicitly asked to."
     );
-    let mut messages =
-        vec![ChatMessage::system(format!("{}\n\n{}", cfg.system_prompt, identity))];
+    let mut system = format!("{}\n\n{}", cfg.system_prompt, identity);
+    if tools::available(cfg) {
+        system.push_str(&tools::prompt_section());
+    }
+    let mut messages = vec![ChatMessage::system(system)];
 
     // `history` is newest-first; feed it oldest-first.
     for m in history.iter().rev() {
@@ -277,4 +365,25 @@ fn truncate(text: &str, max_chars: usize) -> String {
     let mut out: String = text.chars().take(max_chars - 1).collect();
     out.push('…');
     out
+}
+
+/// First line of a string, for compact activity logs.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("").trim()
+}
+
+/// Strip internal ReAct scaffolding the model sometimes echoes, so Discord only
+/// sees the human-facing answer.
+fn sanitize_reply(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !t.starts_with("TOOL_CALL")
+                && !t.starts_with("TOOL_RESULT")
+                && !t.starts_with("(If more steps are needed")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }

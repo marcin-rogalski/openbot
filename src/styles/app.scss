@@ -59,6 +59,27 @@ body,
   border-radius: 8px;
 }
 
+.approvals {
+  flex-shrink: 0;
+  padding: 10px 20px 0;
+}
+
+.approval-card {
+  padding: 12px 14px;
+  border: 1px solid var(--chakra-colors-border-emphasized);
+  border-radius: 10px;
+  background: var(--chakra-colors-bg-panel);
+}
+
+.approval-args {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--chakra-colors-fg-muted);
+  word-break: break-all;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;

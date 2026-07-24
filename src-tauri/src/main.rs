@@ -6,7 +6,9 @@ mod macos;
 mod bot;
 mod config;
 mod discord;
+mod gdrive;
 mod model;
+mod tools;
 mod tray;
 mod window;
 
@@ -37,7 +39,10 @@ fn main() {
             bot::start_bot,
             bot::stop_bot,
             bot::get_bot_status,
-            bot::restart_bot
+            bot::restart_bot,
+            gdrive::connect_drive,
+            gdrive::drive_status,
+            bot::resolve_tool_approval
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,15 +6,20 @@
 //! items in sync, and emits [`STATUS_EVENT`] so every surface reacts to the same
 //! change. The actual Discord + model work lives in [`crate::discord`].
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use serde_json::{json, Value};
 use serenity::all::ShardManager;
 use tauri::async_runtime::JoinHandle;
 use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager, State, Wry};
+use tokio::sync::oneshot;
+
+use crate::config::BotConfig;
 
 /// Emitted whenever the running state flips: `{ running: bool }`.
 pub const STATUS_EVENT: &str = "bot://status";
@@ -22,6 +27,12 @@ pub const STATUS_EVENT: &str = "bot://status";
 pub const ACTIVITY_EVENT: &str = "bot://activity";
 /// Emitted with throughput numbers for the status bar (prefill / inference).
 pub const METRICS_EVENT: &str = "bot://metrics";
+/// Emitted to request approval for a tool call: `{ id, tool, args }`.
+pub const TOOL_APPROVAL_EVENT: &str = "bot://tool-approval";
+/// Emitted when an approval is resolved or times out, so the UI drops its card.
+pub const TOOL_APPROVAL_RESOLVED_EVENT: &str = "bot://tool-approval-resolved";
+
+const APPROVAL_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Clone, Serialize)]
 pub struct BotStatus {
@@ -70,6 +81,25 @@ struct Inner {
     task: Option<JoinHandle<()>>,
     start_item: Option<MenuItem<Wry>>,
     stop_item: Option<MenuItem<Wry>>,
+    /// In-flight tool-approval requests, keyed by request id.
+    approvals: HashMap<String, oneshot::Sender<Decision>>,
+}
+
+/// Resolved policy for a tool call.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Policy {
+    Allow,
+    Ask,
+    Deny,
+}
+
+/// User's answer to an approval prompt.
+#[derive(Clone, Copy)]
+pub enum Decision {
+    Approve,
+    Deny,
+    AlwaysAllow,
+    AlwaysDeny,
 }
 
 /// Managed Tauri state. Cheap to construct; lives for the app's lifetime.
@@ -210,6 +240,60 @@ pub fn emit_log(app: &AppHandle, content: impl Into<String>) {
 
 pub fn emit_metrics(app: &AppHandle, metrics: Metrics) {
     let _ = app.emit(METRICS_EVENT, metrics);
+}
+
+// --- Tool policy + approval -------------------------------------------------
+
+/// Resolve a tool's policy: an explicit config entry wins; otherwise write tools
+/// default to `ask` and read tools to `allow`.
+pub fn policy_for(cfg: &BotConfig, tool: &str, is_write: bool) -> Policy {
+    match cfg.tool_policies.get(tool).map(String::as_str) {
+        Some("allow") => Policy::Allow,
+        Some("deny") => Policy::Deny,
+        Some("ask") => Policy::Ask,
+        _ if is_write => Policy::Ask,
+        _ => Policy::Allow,
+    }
+}
+
+/// Ask the UI to approve a tool call and wait for the answer (or deny on a 60s
+/// timeout / if no one responds).
+pub async fn request_approval(app: &AppHandle, tool: &str, args: &Value) -> Decision {
+    let id = format!("ap-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+    let (tx, rx) = oneshot::channel();
+    app.state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .approvals
+        .insert(id.clone(), tx);
+    let _ = app.emit(TOOL_APPROVAL_EVENT, json!({ "id": id, "tool": tool, "args": args }));
+
+    let decision = match tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await
+    {
+        Ok(Ok(decision)) => decision,
+        _ => {
+            app.state::<BotManager>().inner.lock().unwrap().approvals.remove(&id);
+            Decision::Deny
+        }
+    };
+    // Tell the UI to drop the card (handles the timeout case too).
+    let _ = app.emit(TOOL_APPROVAL_RESOLVED_EVENT, json!({ "id": id }));
+    decision
+}
+
+#[tauri::command]
+pub fn resolve_tool_approval(app: AppHandle, id: String, decision: String) {
+    let decision = match decision.as_str() {
+        "approve" => Decision::Approve,
+        "always_allow" => Decision::AlwaysAllow,
+        "always_deny" => Decision::AlwaysDeny,
+        _ => Decision::Deny,
+    };
+    if let Some(tx) = app.state::<BotManager>().inner.lock().unwrap().approvals.remove(&id) {
+        let _ = tx.send(decision);
+    }
+    let _ = app.emit(TOOL_APPROVAL_RESOLVED_EVENT, json!({ "id": id }));
 }
 
 fn now_ms() -> u64 {

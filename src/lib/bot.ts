@@ -7,6 +7,8 @@ import { useEffect, useState } from "react"
 export const STATUS_EVENT = "bot://status"
 export const ACTIVITY_EVENT = "bot://activity"
 export const METRICS_EVENT = "bot://metrics"
+export const TOOL_APPROVAL_EVENT = "bot://tool-approval"
+export const TOOL_APPROVAL_RESOLVED_EVENT = "bot://tool-approval-resolved"
 
 export type BotStatus = { running: boolean }
 
@@ -33,6 +35,19 @@ export const stopBot = (): Promise<void> => invoke("stop_bot")
 export const getBotStatus = (): Promise<BotStatus> => invoke("get_bot_status")
 /** Restart the bot to apply new settings (no-op if it isn't running). */
 export const restartBot = (): Promise<void> => invoke("restart_bot")
+
+/** Run the Google OAuth flow; resolves to the connected account email. */
+export const connectDrive = (): Promise<string> => invoke("connect_drive")
+/** Whether Drive already has a cached token (no network). */
+export const driveStatus = (): Promise<boolean> => invoke("drive_status")
+
+export type ApprovalDecision = "approve" | "deny" | "always_allow" | "always_deny"
+export type ToolApproval = { id: string; tool: string; args: unknown }
+
+export const resolveToolApproval = (
+  id: string,
+  decision: ApprovalDecision,
+): Promise<void> => invoke("resolve_tool_approval", { id, decision })
 
 // --- Hooks ------------------------------------------------------------------
 
@@ -78,6 +93,35 @@ export function useMetrics(): Metrics {
   }, [])
 
   return metrics
+}
+
+/** Pending tool-approval requests + a resolver that removes them optimistically. */
+export function useToolApprovals(): [
+  ToolApproval[],
+  (id: string, decision: ApprovalDecision) => void,
+] {
+  const [pending, setPending] = useState<ToolApproval[]>([])
+
+  useEffect(() => {
+    const unlistenReq = listen<ToolApproval>(TOOL_APPROVAL_EVENT, (e) => {
+      setPending((prev) => [...prev, e.payload])
+    })
+    // Drop a card when the backend resolves it (including on timeout).
+    const unlistenDone = listen<{ id: string }>(TOOL_APPROVAL_RESOLVED_EVENT, (e) => {
+      setPending((prev) => prev.filter((a) => a.id !== e.payload.id))
+    })
+    return () => {
+      unlistenReq.then((off) => off())
+      unlistenDone.then((off) => off())
+    }
+  }, [])
+
+  const resolve = (id: string, decision: ApprovalDecision) => {
+    setPending((prev) => prev.filter((a) => a.id !== id))
+    void resolveToolApproval(id, decision)
+  }
+
+  return [pending, resolve]
 }
 
 /** Accumulates `bot://activity` events into a feed for the chat preview. */

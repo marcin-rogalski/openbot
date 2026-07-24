@@ -9,7 +9,7 @@ import {
   Textarea,
 } from "@chakra-ui/react"
 import { useEffect, useState } from "react"
-import { restartBot } from "../lib/bot"
+import { connectDrive, driveStatus, restartBot } from "../lib/bot"
 import { type BotConfig, DEFAULT_CONFIG, loadConfig, saveConfig } from "../lib/config"
 
 function FormRow({
@@ -40,12 +40,16 @@ export function SettingsPane() {
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG)
   const [loaded, setLoaded] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [drive, setDrive] = useState<string>("checking…")
 
   useEffect(() => {
     loadConfig().then((c) => {
       setConfig(c)
       setLoaded(true)
     })
+    driveStatus().then((connected) =>
+      setDrive(connected ? "Connected (token cached)" : "Not connected"),
+    )
   }, [])
 
   const update = <K extends keyof BotConfig>(key: K, value: BotConfig[K]) => {
@@ -58,6 +62,15 @@ export function SettingsPane() {
     void saveConfig(config)
       .then(() => restartBot())
       .then(() => setSaved(true))
+  }
+
+  const onConnectDrive = () => {
+    setDrive("connecting… (check your browser)")
+    // Save first so the backend reads the latest client id/secret/folder.
+    void saveConfig(config)
+      .then(() => connectDrive())
+      .then((email) => setDrive(`Connected as ${email}`))
+      .catch((e) => setDrive(`Error: ${e}`))
   }
 
   return (
@@ -142,6 +155,48 @@ export function SettingsPane() {
                 />
               </FormRow>
             </Flex>
+
+            <Box borderTopWidth="1px" borderColor="border.subtle" pt="4">
+              <Heading size="xs" mb="1">
+                Google Drive (RAG)
+              </Heading>
+              <Text fontSize="xs" color="fg.subtle" mb="3">
+                Create an OAuth <strong>Desktop</strong> client in Google Cloud (Drive API
+                enabled), then Connect and share/point at one folder.
+              </Text>
+              <Stack gap="4">
+                <FormRow label="Google client ID">
+                  <Input
+                    value={config.googleClientId}
+                    onChange={(e) => update("googleClientId", e.target.value)}
+                  />
+                </FormRow>
+                <FormRow label="Google client secret">
+                  <Input
+                    type="password"
+                    value={config.googleClientSecret}
+                    onChange={(e) => update("googleClientSecret", e.target.value)}
+                  />
+                </FormRow>
+                <FormRow
+                  label="Drive folder ID"
+                  hint="The id from the folder's URL (…/folders/THIS_PART)."
+                >
+                  <Input
+                    value={config.driveFolderId}
+                    onChange={(e) => update("driveFolderId", e.target.value)}
+                  />
+                </FormRow>
+                <Flex align="center" gap="3">
+                  <Button variant="subtle" colorPalette="blue" onClick={onConnectDrive}>
+                    Connect
+                  </Button>
+                  <Text fontSize="sm" color="fg.muted">
+                    {drive}
+                  </Text>
+                </Flex>
+              </Stack>
+            </Box>
 
             <Flex align="center" gap="3" pt="1">
               <Button colorPalette="blue" onClick={onSave}>
