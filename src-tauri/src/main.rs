@@ -4,6 +4,9 @@
 #[cfg(target_os = "macos")]
 mod macos;
 mod bot;
+mod config;
+mod discord;
+mod model;
 mod tray;
 mod window;
 
@@ -12,6 +15,7 @@ use tauri::Manager;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(bot::BotManager::new())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -32,7 +36,8 @@ fn main() {
             window::show_main_window,
             bot::start_bot,
             bot::stop_bot,
-            bot::get_bot_status
+            bot::get_bot_status,
+            bot::restart_bot
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

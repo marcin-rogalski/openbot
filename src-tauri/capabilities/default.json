@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Core permissions for the main window. Notably grants core:event (listen/emit) so the frontend can receive bot://status and bot://activity.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "shell:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "shell:allow-open",
+    "store:default"
+  ]
 }

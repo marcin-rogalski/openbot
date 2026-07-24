@@ -2,17 +2,16 @@
 //!
 //! [`BotManager`] is the single source of truth for whether the bot is running.
 //! Both the window (via commands) and the tray menu funnel through
-//! [`set_running`], which spawns/aborts the work, keeps the tray menu items in
-//! sync, and emits [`STATUS_EVENT`] so every surface reacts to the same change.
-//!
-//! For this milestone the "work" is a mock loop emitting canned
-//! [`ActivityEvent`]s. The real bot (serenity + rmcp + MLX) will replace
-//! [`mock_loop`] while keeping the same events, so the UI needs no changes.
+//! [`set_running`], which starts/stops the Discord client, keeps the tray menu
+//! items in sync, and emits [`STATUS_EVENT`] so every surface reacts to the same
+//! change. The actual Discord + model work lives in [`crate::discord`].
 
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use serenity::all::ShardManager;
 use tauri::async_runtime::JoinHandle;
 use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Manager, State, Wry};
@@ -30,7 +29,7 @@ pub struct BotStatus {
 }
 
 /// One entry in the read-only activity feed. `kind` drives how the UI renders
-/// it; the shape is intentionally stable so the real bot can reuse it verbatim.
+/// it; the shape is stable so the frontend never changes as sources evolve.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEvent {
@@ -39,6 +38,8 @@ pub struct ActivityEvent {
     pub kind: ActivityKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
     pub content: String,
 }
 
@@ -47,12 +48,14 @@ pub struct ActivityEvent {
 pub enum ActivityKind {
     Message,
     ModelCall,
+    // Reserved for MCP tool calls (next slice); already rendered by the UI.
+    #[allow(dead_code)]
     ToolCall,
     Reply,
     Log,
 }
 
-/// Model throughput in tokens/second. `None` means "not measured yet".
+/// Model throughput in tokens/second. `None` means "not measured".
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Metrics {
@@ -63,6 +66,7 @@ pub struct Metrics {
 #[derive(Default)]
 struct Inner {
     running: bool,
+    shard_manager: Option<Arc<ShardManager>>,
     task: Option<JoinHandle<()>>,
     start_item: Option<MenuItem<Wry>>,
     stop_item: Option<MenuItem<Wry>>,
@@ -82,82 +86,130 @@ impl BotManager {
     /// Register the tray's Start/Stop menu items so [`set_running`] can keep
     /// them enabled/disabled. Called once, from the tray setup.
     pub fn set_tray_items(&self, start: MenuItem<Wry>, stop: MenuItem<Wry>) {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         let _ = start.set_enabled(!inner.running);
         let _ = stop.set_enabled(inner.running);
-        drop(inner);
-        let mut inner = self.inner.lock().unwrap();
         inner.start_item = Some(start);
         inner.stop_item = Some(stop);
     }
+
+    /// Called by the Discord supervisor once the client exists, so a later stop
+    /// can shut the gateway down cleanly.
+    pub fn set_shard_manager(&self, manager: Arc<ShardManager>) {
+        self.inner.lock().unwrap().shard_manager = Some(manager);
+    }
 }
 
-/// Flip the running state. Idempotent: a no-op if already in `running`. This is
-/// the only place run-state changes, so the window and tray can never disagree.
-pub fn set_running(app: &AppHandle, running: bool) {
-    let manager = app.state::<BotManager>();
-    let mut inner = manager.inner.lock().unwrap();
-    if inner.running == running {
-        return;
-    }
-    inner.running = running;
-
-    if let Some(task) = inner.task.take() {
-        task.abort();
-    }
-    if running {
-        let handle = app.clone();
-        inner.task = Some(tauri::async_runtime::spawn(mock_loop(handle)));
-    }
-
+fn sync_tray(inner: &Inner, running: bool) {
     if let Some(item) = &inner.start_item {
         let _ = item.set_enabled(!running);
     }
     if let Some(item) = &inner.stop_item {
         let _ = item.set_enabled(running);
     }
-    drop(inner);
-
-    let _ = app.emit(STATUS_EVENT, BotStatus { running });
 }
 
-/// Stand-in for the real bot: replays a canned Discord-style exchange on a loop
-/// until the task is aborted.
-async fn mock_loop(app: AppHandle) {
-    let script = [
-        (ActivityKind::Message, Some("alice"), "hey bot, what's the weather in Wrocław?"),
-        (ActivityKind::ModelCall, None, "→ qwen2.5-7b (temp 0.7)"),
-        (ActivityKind::ToolCall, None, "get_weather { city: \"Wrocław\" }"),
-        (ActivityKind::Log, None, "get_weather → 200 OK (142ms)"),
-        (ActivityKind::Reply, Some("openbot"), "It's 22°C and sunny in Wrocław right now."),
-    ];
-
-    let mut seq: u64 = 0;
-    loop {
-        for (kind, author, content) in &script {
-            // Fake plausible, slightly-varying throughput when the model runs.
-            if matches!(kind, ActivityKind::ModelCall) {
-                let _ = app.emit(
-                    METRICS_EVENT,
-                    Metrics {
-                        prefill_tps: Some(220.0 + (seq % 9) as f64 * 11.0),
-                        inference_tps: Some(32.0 + (seq % 6) as f64 * 3.0),
-                    },
-                );
-            }
-            let event = ActivityEvent {
-                id: format!("mock-{seq}"),
-                ts: now_ms(),
-                kind: kind.clone(),
-                author: author.map(str::to_string),
-                content: content.to_string(),
-            };
-            let _ = app.emit(ACTIVITY_EVENT, event);
-            seq += 1;
-            tokio::time::sleep(Duration::from_millis(900)).await;
-        }
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+/// Flip the running state. Idempotent. This is the only place run-state changes,
+/// so the window and tray can never disagree.
+pub fn set_running(app: &AppHandle, running: bool) {
+    if running {
+        start(app);
+    } else {
+        stop(app);
     }
+}
+
+fn start(app: &AppHandle) {
+    let manager = app.state::<BotManager>();
+    if manager.inner.lock().unwrap().running {
+        return;
+    }
+
+    // Starting requires a usable config; refuse (and say why) otherwise.
+    let config = crate::config::load(app);
+    if !config.is_ready() {
+        emit_log(
+            app,
+            "Set the Discord token, model URL, and model name in Settings, then Start.",
+        );
+        return;
+    }
+
+    {
+        let mut inner = manager.inner.lock().unwrap();
+        inner.running = true;
+        sync_tray(&inner, true);
+    }
+    let _ = app.emit(STATUS_EVENT, BotStatus { running: true });
+
+    let app_for_task = app.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        crate::discord::run(app_for_task, config).await;
+    });
+    manager.inner.lock().unwrap().task = Some(task);
+}
+
+fn stop(app: &AppHandle) {
+    let (shard_manager, task) = begin_stop(app);
+    if shard_manager.is_none() && task.is_none() {
+        return; // was already stopped
+    }
+    tauri::async_runtime::spawn(finish_stop(shard_manager, task));
+}
+
+/// Flip to stopped and hand back whatever needs shutting down. Returns
+/// `(None, None)` if it was already stopped.
+fn begin_stop(app: &AppHandle) -> (Option<Arc<ShardManager>>, Option<JoinHandle<()>>) {
+    let manager = app.state::<BotManager>();
+    let mut inner = manager.inner.lock().unwrap();
+    if !inner.running {
+        return (None, None);
+    }
+    inner.running = false;
+    sync_tray(&inner, false);
+    let handles = (inner.shard_manager.take(), inner.task.take());
+    drop(inner);
+    let _ = app.emit(STATUS_EVENT, BotStatus { running: false });
+    handles
+}
+
+async fn finish_stop(shard_manager: Option<Arc<ShardManager>>, task: Option<JoinHandle<()>>) {
+    if let Some(shard_manager) = shard_manager {
+        shard_manager.shutdown_all().await;
+    } else if let Some(task) = task {
+        // Still connecting — no gateway to shut down yet.
+        task.abort();
+    }
+}
+
+// --- Event emission helpers (used by discord.rs) ----------------------------
+
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub fn emit_activity(
+    app: &AppHandle,
+    kind: ActivityKind,
+    author: Option<String>,
+    channel: Option<String>,
+    content: impl Into<String>,
+) {
+    let event = ActivityEvent {
+        id: format!("ev-{}", SEQ.fetch_add(1, Ordering::Relaxed)),
+        ts: now_ms(),
+        kind,
+        author,
+        channel,
+        content: content.into(),
+    };
+    let _ = app.emit(ACTIVITY_EVENT, event);
+}
+
+pub fn emit_log(app: &AppHandle, content: impl Into<String>) {
+    emit_activity(app, ActivityKind::Log, None, None, content);
+}
+
+pub fn emit_metrics(app: &AppHandle, metrics: Metrics) {
+    let _ = app.emit(METRICS_EVENT, metrics);
 }
 
 fn now_ms() -> u64 {
@@ -181,4 +233,17 @@ pub fn stop_bot(app: AppHandle) {
 pub fn get_bot_status(manager: State<'_, BotManager>) -> BotStatus {
     let running = manager.inner.lock().unwrap().running;
     BotStatus { running }
+}
+
+/// Restart the bot so saved Settings take effect — but only if it is currently
+/// running (saving while stopped shouldn't start it). Awaits a clean gateway
+/// shutdown before reconnecting so there's no overlap/double-reply.
+#[tauri::command]
+pub async fn restart_bot(app: AppHandle) {
+    let (shard_manager, task) = begin_stop(&app);
+    let was_running = shard_manager.is_some() || task.is_some();
+    finish_stop(shard_manager, task).await;
+    if was_running {
+        start(&app);
+    }
 }

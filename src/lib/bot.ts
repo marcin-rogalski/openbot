@@ -22,6 +22,7 @@ export type ActivityEvent = {
   ts: number
   kind: ActivityKind
   author?: string
+  channel?: string
   content: string
 }
 
@@ -30,6 +31,8 @@ export type ActivityEvent = {
 export const startBot = (): Promise<void> => invoke("start_bot")
 export const stopBot = (): Promise<void> => invoke("stop_bot")
 export const getBotStatus = (): Promise<BotStatus> => invoke("get_bot_status")
+/** Restart the bot to apply new settings (no-op if it isn't running). */
+export const restartBot = (): Promise<void> => invoke("restart_bot")
 
 // --- Hooks ------------------------------------------------------------------
 
