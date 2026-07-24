@@ -1,0 +1,86 @@
+// Layout + custom chrome for the app shell. Colours come from Chakra semantic
+// tokens (fg / fg.muted / bg.panel / border.subtle) so light/dark just work;
+// here we handle structure, the draggable title bar, and a few neutral accents.
+
+$border-faint: rgba(128, 128, 128, 0.1);
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+.app-shell {
+  overflow: hidden;
+}
+
+// Transparent macOS overlay title bar. Draggable; no text selection.
+.titlebar {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+// Floating, inset sidebar panel (background/border come from Chakra props).
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  padding: 14px 12px;
+}
+
+// Right pane: baked into the window background, no border. Sits high since the
+// title bar is transparent/overlaid.
+.pane-title {
+  padding: 4px 20px 12px;
+}
+
+.feed {
+  padding: 4px 20px 16px;
+}
+
+.activity-row {
+  padding: 6px 0;
+  border-bottom: 1px solid $border-faint;
+  font-size: 14px;
+  line-height: 1.5;
+
+  &:last-of-type {
+    border-bottom: none;
+  }
+}
+
+.activity-time {
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.settings-card {
+  padding: 16px;
+  border: 1px solid $border-faint;
+  border-radius: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+
+  &.is-on {
+    background: #2f9e44;
+    box-shadow: 0 0 0 3px rgba(47, 158, 68, 0.2);
+  }
+
+  &.is-off {
+    background: #adb5bd;
+  }
+}
+
+// Slim status strip at the bottom of the content column (right of the sidebar).
+.status-bar {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 20px;
+  border-top: 1px solid $border-faint;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--chakra-colors-fg-muted);
+}

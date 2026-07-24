@@ -3,6 +3,7 @@
 
 #[cfg(target_os = "macos")]
 mod macos;
+mod bot;
 mod tray;
 mod window;
 
@@ -11,6 +12,7 @@ use tauri::Manager;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(bot::BotManager::new())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             macos::intercept_quit_apple_event();
@@ -27,7 +29,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             window::hide_main_window,
-            window::show_main_window
+            window::show_main_window,
+            bot::start_bot,
+            bot::stop_bot,
+            bot::get_bot_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

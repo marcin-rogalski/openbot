@@ -10,6 +10,8 @@ dist-ssr
 
 # OS
 .DS_Store
+# Screenshots dropped into the repo root (root-level only; real assets live in subdirs)
+/*.png
 
 # Tauri / Rust
 src-tauri/target

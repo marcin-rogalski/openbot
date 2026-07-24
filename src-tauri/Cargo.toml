@@ -12,6 +12,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Async timers for the bot loop. Tauri's async runtime is tokio; serenity and
+# reqwest (next milestone) will pull the rest of tokio in anyway.
+tokio = { version = "1", features = ["time"] }
 
 # macOS: intercept the Quit AppleEvent the OS fires once the window is hidden,
 # so the app keeps running from the tray (see macos.rs).

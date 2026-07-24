@@ -1,18 +1,27 @@
-import { invoke } from "@tauri-apps/api/core"
+import { Flex } from "@chakra-ui/react"
+import { useState } from "react"
+import { ChatPane } from "./components/ChatPane"
+import { SettingsPane } from "./components/SettingsPane"
+import { Sidebar, type Tab } from "./components/Sidebar"
+import { StatusBar } from "./components/StatusBar"
+import { Titlebar } from "./components/Titlebar"
 
 function App() {
-  const hideToTray = (): void => {
-    void invoke("hide_main_window")
-  }
+  const [tab, setTab] = useState<Tab>("chat")
 
   return (
-    <main>
-      <h1>openbot</h1>
-      <p>Replace this with your app. The tray icon and window plumbing already work.</p>
-      <button type="button" onClick={hideToTray}>
-        Hide to tray
-      </button>
-    </main>
+    <Flex className="app-shell" direction="column" h="100vh" colorPalette="blue">
+      <Titlebar />
+      <Flex flex="1" minH="0" px="2" pb="2" gap="2">
+        <Sidebar tab={tab} onTabChange={setTab} />
+        <Flex direction="column" flex="1" minW="0">
+          <Flex as="main" className="content" direction="column" flex="1" minH="0">
+            {tab === "chat" ? <ChatPane /> : <SettingsPane />}
+          </Flex>
+          <StatusBar />
+        </Flex>
+      </Flex>
+    </Flex>
   )
 }
 

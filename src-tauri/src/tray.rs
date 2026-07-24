@@ -1,16 +1,27 @@
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Runtime,
+    AppHandle, Manager,
 };
 
+use crate::bot::{self, BotManager};
 use crate::window::show_window;
 
-/// Builds the menu-bar tray icon: left-click opens the main window,
-/// right-click shows a menu with just "Quit" for now.
-pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+/// Builds the menu-bar tray icon: left-click opens the main window, right-click
+/// shows a menu with Start/Stop (kept in sync with the bot's running state) and
+/// Quit. The Start/Stop items are handed to [`BotManager`] so it can enable or
+/// disable them as the state changes.
+pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
+    let start = MenuItem::with_id(app, "start", "Start", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&quit])?;
+    let menu = Menu::with_items(app, &[&start, &stop, &separator, &quit])?;
+
+    // Register the items with the bot manager; it sets their initial enabled
+    // state and keeps them in sync from here on.
+    app.state::<BotManager>()
+        .set_tray_items(start.clone(), stop.clone());
 
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())
@@ -29,10 +40,11 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 show_window(tray.app_handle());
             }
         })
-        .on_menu_event(|app, event| {
-            if event.id.as_ref() == "quit" {
-                app.exit(0);
-            }
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "start" => bot::set_running(app, true),
+            "stop" => bot::set_running(app, false),
+            "quit" => app.exit(0),
+            _ => {}
         })
         .build(app)?;
 
