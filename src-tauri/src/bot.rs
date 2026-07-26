@@ -1,10 +1,9 @@
-//! Bot lifecycle + activity stream.
+//! Multi-bot lifecycle + activity streams.
 //!
-//! [`BotManager`] is the single source of truth for whether the bot is running.
-//! Both the window (via commands) and the tray menu funnel through
-//! [`set_running`], which starts/stops the Discord client, keeps the tray menu
-//! items in sync, and emits [`STATUS_EVENT`] so every surface reacts to the same
-//! change. The actual Discord + model work lives in [`crate::discord`].
+//! [`BotManager`] tracks which bots are currently running (each its own serenity
+//! client). Every emitted event carries the `botId` it belongs to, so the UI can
+//! scope streams to the selected bot. Tool-approval requests are global (keyed by
+//! request id) but also carry the requesting bot.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,35 +14,31 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use serenity::all::ShardManager;
 use tauri::async_runtime::JoinHandle;
-use tauri::menu::MenuItem;
-use tauri::{AppHandle, Emitter, Manager, State, Wry};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
-use crate::config::BotConfig;
+use crate::config::{self, BotConfig};
 
-/// Emitted whenever the running state flips: `{ running: bool }`.
+/// `{ botId, running }` whenever a bot starts or stops.
 pub const STATUS_EVENT: &str = "bot://status";
-/// Emitted for each piece of bot activity shown in the chat preview.
+/// One activity-feed entry (carries `botId`).
 pub const ACTIVITY_EVENT: &str = "bot://activity";
-/// Emitted with throughput numbers for the status bar (prefill / inference).
+/// Live token stream for an in-progress model call: `{ botId, id, content }` —
+/// the UI replaces the matching activity entry's content as it grows.
+pub const STREAM_EVENT: &str = "bot://stream";
+/// Throughput numbers for the status bar (carries `botId`).
 pub const METRICS_EVENT: &str = "bot://metrics";
-/// Emitted to request approval for a tool call: `{ id, tool, args }`.
+/// Tool-approval request: `{ id, botId, tool, args }`.
 pub const TOOL_APPROVAL_EVENT: &str = "bot://tool-approval";
-/// Emitted when an approval is resolved or times out, so the UI drops its card.
+/// Approval resolved/timed out: `{ id }` — the UI drops the card.
 pub const TOOL_APPROVAL_RESOLVED_EVENT: &str = "bot://tool-approval-resolved";
 
 const APPROVAL_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Clone, Serialize)]
-pub struct BotStatus {
-    pub running: bool,
-}
-
-/// One entry in the read-only activity feed. `kind` drives how the UI renders
-/// it; the shape is stable so the frontend never changes as sources evolve.
-#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEvent {
+    pub bot_id: String,
     pub id: String,
     pub ts: u64,
     pub kind: ActivityKind,
@@ -52,6 +47,10 @@ pub struct ActivityEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
     pub content: String,
+    /// A friendly one-liner shown in non-verbose mode (tool calls). When
+    /// absent, `content` is shown in both modes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -59,8 +58,6 @@ pub struct ActivityEvent {
 pub enum ActivityKind {
     Message,
     ModelCall,
-    // Reserved for MCP tool calls (next slice); already rendered by the UI.
-    #[allow(dead_code)]
     ToolCall,
     Reply,
     Log,
@@ -74,15 +71,53 @@ pub struct Metrics {
     pub inference_tps: Option<f64>,
 }
 
-#[derive(Default)]
-struct Inner {
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusEvent<'a> {
+    bot_id: &'a str,
     running: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetricsEvent<'a> {
+    bot_id: &'a str,
+    prefill_tps: Option<f64>,
+    inference_tps: Option<f64>,
+}
+
+/// Per-running-bot handles used to shut it down.
+#[derive(Default)]
+struct BotRuntime {
     shard_manager: Option<Arc<ShardManager>>,
     task: Option<JoinHandle<()>>,
-    start_item: Option<MenuItem<Wry>>,
-    stop_item: Option<MenuItem<Wry>>,
+}
+
+#[derive(Default)]
+struct Inner {
+    /// Only currently-running bots are present, keyed by bot id.
+    bots: HashMap<String, BotRuntime>,
     /// In-flight tool-approval requests, keyed by request id.
     approvals: HashMap<String, oneshot::Sender<Decision>>,
+}
+
+#[derive(Default)]
+pub struct BotManager {
+    inner: Mutex<Inner>,
+}
+
+impl BotManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Called by a bot's supervisor once its client exists, so a later stop can
+    /// shut the gateway down cleanly.
+    pub fn set_shard_manager(&self, bot_id: &str, manager: Arc<ShardManager>) {
+        if let Some(runtime) = self.inner.lock().unwrap().bots.get_mut(bot_id) {
+            runtime.shard_manager = Some(manager);
+        }
+    }
 }
 
 /// Resolved policy for a tool call.
@@ -102,152 +137,161 @@ pub enum Decision {
     AlwaysDeny,
 }
 
-/// Managed Tauri state. Cheap to construct; lives for the app's lifetime.
-#[derive(Default)]
-pub struct BotManager {
-    inner: Mutex<Inner>,
-}
+// --- Lifecycle --------------------------------------------------------------
 
-impl BotManager {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register the tray's Start/Stop menu items so [`set_running`] can keep
-    /// them enabled/disabled. Called once, from the tray setup.
-    pub fn set_tray_items(&self, start: MenuItem<Wry>, stop: MenuItem<Wry>) {
-        let mut inner = self.inner.lock().unwrap();
-        let _ = start.set_enabled(!inner.running);
-        let _ = stop.set_enabled(inner.running);
-        inner.start_item = Some(start);
-        inner.stop_item = Some(stop);
-    }
-
-    /// Called by the Discord supervisor once the client exists, so a later stop
-    /// can shut the gateway down cleanly.
-    pub fn set_shard_manager(&self, manager: Arc<ShardManager>) {
-        self.inner.lock().unwrap().shard_manager = Some(manager);
-    }
-}
-
-fn sync_tray(inner: &Inner, running: bool) {
-    if let Some(item) = &inner.start_item {
-        let _ = item.set_enabled(!running);
-    }
-    if let Some(item) = &inner.stop_item {
-        let _ = item.set_enabled(running);
-    }
-}
-
-/// Flip the running state. Idempotent. This is the only place run-state changes,
-/// so the window and tray can never disagree.
-pub fn set_running(app: &AppHandle, running: bool) {
-    if running {
-        start(app);
-    } else {
-        stop(app);
-    }
-}
-
-fn start(app: &AppHandle) {
+pub fn start(app: &AppHandle, bot_id: &str) {
     let manager = app.state::<BotManager>();
-    if manager.inner.lock().unwrap().running {
+    if manager.inner.lock().unwrap().bots.contains_key(bot_id) {
         return;
     }
 
-    // Starting requires a usable config; refuse (and say why) otherwise.
-    let config = crate::config::load(app);
-    if !config.is_ready() {
+    let Some(bot) = config::load_bot(app, bot_id) else {
+        emit_log(app, bot_id, "Bot config not found.");
+        return;
+    };
+    if !bot.is_ready() {
         emit_log(
             app,
-            "Set the Discord token, model URL, and model name in Settings, then Start.",
+            bot_id,
+            "Set the Discord token and model (base URL + name) in this bot's settings, then start.",
         );
         return;
     }
+    let global = config::load_global(app);
 
-    {
-        let mut inner = manager.inner.lock().unwrap();
-        inner.running = true;
-        sync_tray(&inner, true);
-    }
-    let _ = app.emit(STATUS_EVENT, BotStatus { running: true });
+    manager
+        .inner
+        .lock()
+        .unwrap()
+        .bots
+        .insert(bot_id.to_string(), BotRuntime::default());
+    let _ = app.emit(STATUS_EVENT, StatusEvent { bot_id, running: true });
 
     let app_for_task = app.clone();
+    let id = bot_id.to_string();
     let task = tauri::async_runtime::spawn(async move {
-        crate::discord::run(app_for_task, config).await;
+        crate::discord::run(app_for_task, id, bot, global).await;
     });
-    manager.inner.lock().unwrap().task = Some(task);
-}
-
-fn stop(app: &AppHandle) {
-    let (shard_manager, task) = begin_stop(app);
-    if shard_manager.is_none() && task.is_none() {
-        return; // was already stopped
-    }
-    tauri::async_runtime::spawn(finish_stop(shard_manager, task));
-}
-
-/// Flip to stopped and hand back whatever needs shutting down. Returns
-/// `(None, None)` if it was already stopped.
-fn begin_stop(app: &AppHandle) -> (Option<Arc<ShardManager>>, Option<JoinHandle<()>>) {
-    let manager = app.state::<BotManager>();
-    let mut inner = manager.inner.lock().unwrap();
-    if !inner.running {
-        return (None, None);
-    }
-    inner.running = false;
-    sync_tray(&inner, false);
-    let handles = (inner.shard_manager.take(), inner.task.take());
-    drop(inner);
-    let _ = app.emit(STATUS_EVENT, BotStatus { running: false });
-    handles
-}
-
-async fn finish_stop(shard_manager: Option<Arc<ShardManager>>, task: Option<JoinHandle<()>>) {
-    if let Some(shard_manager) = shard_manager {
-        shard_manager.shutdown_all().await;
-    } else if let Some(task) = task {
-        // Still connecting — no gateway to shut down yet.
-        task.abort();
+    {
+        let mut inner = manager.inner.lock().unwrap();
+        if let Some(runtime) = inner.bots.get_mut(bot_id) {
+            runtime.task = Some(task);
+        }
     }
 }
 
-// --- Event emission helpers (used by discord.rs) ----------------------------
+pub fn stop(app: &AppHandle, bot_id: &str) {
+    let runtime = app.state::<BotManager>().inner.lock().unwrap().bots.remove(bot_id);
+    let Some(runtime) = runtime else {
+        return; // wasn't running
+    };
+    let _ = app.emit(STATUS_EVENT, StatusEvent { bot_id, running: false });
+    tauri::async_runtime::spawn(async move {
+        if let Some(shard_manager) = runtime.shard_manager {
+            shard_manager.shutdown_all().await;
+        } else if let Some(task) = runtime.task {
+            task.abort();
+        }
+    });
+}
+
+// --- Event emission helpers -------------------------------------------------
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn emit_activity(
     app: &AppHandle,
+    bot_id: &str,
     kind: ActivityKind,
     author: Option<String>,
     channel: Option<String>,
     content: impl Into<String>,
 ) {
     let event = ActivityEvent {
+        bot_id: bot_id.to_string(),
         id: format!("ev-{}", SEQ.fetch_add(1, Ordering::Relaxed)),
         ts: now_ms(),
         kind,
         author,
         channel,
         content: content.into(),
+        summary: None,
     };
     let _ = app.emit(ACTIVITY_EVENT, event);
 }
 
-pub fn emit_log(app: &AppHandle, content: impl Into<String>) {
-    emit_activity(app, ActivityKind::Log, None, None, content);
+pub fn emit_log(app: &AppHandle, bot_id: &str, content: impl Into<String>) {
+    emit_activity(app, bot_id, ActivityKind::Log, None, None, content);
 }
 
-pub fn emit_metrics(app: &AppHandle, metrics: Metrics) {
-    let _ = app.emit(METRICS_EVENT, metrics);
+/// Start a live "thinking" activity for a model call and return its id. The
+/// content fills in via [`stream_update`] as tokens arrive.
+pub fn stream_start(app: &AppHandle, bot_id: &str) -> String {
+    let id = format!("ev-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+    let event = ActivityEvent {
+        bot_id: bot_id.to_string(),
+        id: id.clone(),
+        ts: now_ms(),
+        kind: ActivityKind::ModelCall,
+        author: None,
+        channel: None,
+        content: String::new(),
+        summary: None,
+    };
+    let _ = app.emit(ACTIVITY_EVENT, event);
+    id
+}
+
+/// Push the latest accumulated content for a streaming model call to the UI.
+pub fn stream_update(app: &AppHandle, bot_id: &str, id: &str, content: &str) {
+    let _ = app.emit(STREAM_EVENT, json!({ "botId": bot_id, "id": id, "content": content }));
+}
+
+/// A tool-call activity carrying both the raw detail (`content`, shown in
+/// verbose mode) and a friendly `summary` (shown when folded).
+pub fn emit_tool_activity(
+    app: &AppHandle,
+    bot_id: &str,
+    content: impl Into<String>,
+    summary: impl Into<String>,
+) {
+    let event = ActivityEvent {
+        bot_id: bot_id.to_string(),
+        id: format!("ev-{}", SEQ.fetch_add(1, Ordering::Relaxed)),
+        ts: now_ms(),
+        kind: ActivityKind::ToolCall,
+        author: None,
+        channel: None,
+        content: content.into(),
+        summary: Some(summary.into()),
+    };
+    let _ = app.emit(ACTIVITY_EVENT, event);
+}
+
+pub fn emit_metrics(app: &AppHandle, bot_id: &str, metrics: Metrics) {
+    let _ = app.emit(
+        METRICS_EVENT,
+        MetricsEvent {
+            bot_id,
+            prefill_tps: metrics.prefill_tps,
+            inference_tps: metrics.inference_tps,
+        },
+    );
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // --- Tool policy + approval -------------------------------------------------
 
-/// Resolve a tool's policy: an explicit config entry wins; otherwise write tools
+/// Resolve a policy: an explicit per-bot entry wins; otherwise write tools
 /// default to `ask` and read tools to `allow`.
-pub fn policy_for(cfg: &BotConfig, tool: &str, is_write: bool) -> Policy {
-    match cfg.tool_policies.get(tool).map(String::as_str) {
+pub fn policy_for(bot: &BotConfig, policy_key: &str, is_write: bool) -> Policy {
+    match bot.tool_policies.get(policy_key).map(String::as_str) {
         Some("allow") => Policy::Allow,
         Some("deny") => Policy::Deny,
         Some("ask") => Policy::Ask,
@@ -256,18 +300,15 @@ pub fn policy_for(cfg: &BotConfig, tool: &str, is_write: bool) -> Policy {
     }
 }
 
-/// Ask the UI to approve a tool call and wait for the answer (or deny on a 60s
-/// timeout / if no one responds).
-pub async fn request_approval(app: &AppHandle, tool: &str, args: &Value) -> Decision {
+/// Ask the UI to approve a tool call and wait for the answer (deny on timeout).
+pub async fn request_approval(app: &AppHandle, bot_id: &str, tool: &str, args: &Value) -> Decision {
     let id = format!("ap-{}", SEQ.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
-    app.state::<BotManager>()
-        .inner
-        .lock()
-        .unwrap()
-        .approvals
-        .insert(id.clone(), tx);
-    let _ = app.emit(TOOL_APPROVAL_EVENT, json!({ "id": id, "tool": tool, "args": args }));
+    app.state::<BotManager>().inner.lock().unwrap().approvals.insert(id.clone(), tx);
+    let _ = app.emit(
+        TOOL_APPROVAL_EVENT,
+        json!({ "id": id, "botId": bot_id, "tool": tool, "args": args }),
+    );
 
     let decision = match tokio::time::timeout(Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx).await
     {
@@ -277,9 +318,48 @@ pub async fn request_approval(app: &AppHandle, tool: &str, args: &Value) -> Deci
             Decision::Deny
         }
     };
-    // Tell the UI to drop the card (handles the timeout case too).
     let _ = app.emit(TOOL_APPROVAL_RESOLVED_EVENT, json!({ "id": id }));
     decision
+}
+
+// --- Commands ---------------------------------------------------------------
+
+#[tauri::command]
+pub fn start_bot(app: AppHandle, bot_id: String) {
+    start(&app, &bot_id);
+}
+
+#[tauri::command]
+pub fn stop_bot(app: AppHandle, bot_id: String) {
+    stop(&app, &bot_id);
+}
+
+/// Restart a bot to apply saved settings — only if it's currently running.
+#[tauri::command]
+pub async fn restart_bot(app: AppHandle, bot_id: String) {
+    let runtime = app.state::<BotManager>().inner.lock().unwrap().bots.remove(&bot_id);
+    let was_running = runtime.is_some();
+    if let Some(runtime) = runtime {
+        let _ = app.emit(STATUS_EVENT, StatusEvent { bot_id: &bot_id, running: false });
+        if let Some(shard_manager) = runtime.shard_manager {
+            shard_manager.shutdown_all().await;
+        } else if let Some(task) = runtime.task {
+            task.abort();
+        }
+    }
+    if was_running {
+        start(&app, &bot_id);
+    }
+}
+
+#[tauri::command]
+pub fn get_running_bots(manager: State<'_, BotManager>) -> Vec<String> {
+    manager.inner.lock().unwrap().bots.keys().cloned().collect()
+}
+
+/// Ids of currently-running bots, for the control API.
+pub fn running_ids(app: &AppHandle) -> Vec<String> {
+    app.state::<BotManager>().inner.lock().unwrap().bots.keys().cloned().collect()
 }
 
 #[tauri::command]
@@ -294,40 +374,4 @@ pub fn resolve_tool_approval(app: AppHandle, id: String, decision: String) {
         let _ = tx.send(decision);
     }
     let _ = app.emit(TOOL_APPROVAL_RESOLVED_EVENT, json!({ "id": id }));
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-#[tauri::command]
-pub fn start_bot(app: AppHandle) {
-    set_running(&app, true);
-}
-
-#[tauri::command]
-pub fn stop_bot(app: AppHandle) {
-    set_running(&app, false);
-}
-
-#[tauri::command]
-pub fn get_bot_status(manager: State<'_, BotManager>) -> BotStatus {
-    let running = manager.inner.lock().unwrap().running;
-    BotStatus { running }
-}
-
-/// Restart the bot so saved Settings take effect — but only if it is currently
-/// running (saving while stopped shouldn't start it). Awaits a clean gateway
-/// shutdown before reconnecting so there's no overlap/double-reply.
-#[tauri::command]
-pub async fn restart_bot(app: AppHandle) {
-    let (shard_manager, task) = begin_stop(&app);
-    let was_running = shard_manager.is_some() || task.is_some();
-    finish_stop(shard_manager, task).await;
-    if was_running {
-        start(&app);
-    }
 }

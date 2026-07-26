@@ -14,7 +14,16 @@ use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowRet
 /// Full Drive scope — needed to read, write, and delete in an arbitrary folder.
 pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
-const TOKEN_CACHE_FILE: &str = "gdrive-tokens.json";
+/// Token cache filename for a given OAuth client id. Keyed by client id so
+/// multiple Drive tools using the same Google account share one sign-in.
+fn token_cache_name(client_id: &str) -> String {
+    let safe: String = client_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(64)
+        .collect();
+    format!("gdrive-{safe}.json")
+}
 
 /// Opens the consent URL in the system browser instead of printing it to stdout
 /// (this is a GUI app). No code entry needed — loopback captures it.
@@ -50,19 +59,19 @@ fn application_secret(client_id: &str, client_secret: &str) -> ApplicationSecret
     }
 }
 
-fn token_cache_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
+fn token_cache_path<R: Runtime>(app: &AppHandle<R>, client_id: &str) -> PathBuf {
     let dir = app
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
-    dir.join(TOKEN_CACHE_FILE)
+    dir.join(token_cache_name(client_id))
 }
 
-/// Whether a persisted token exists (so we can show "connected" without
-/// triggering the browser flow just to check).
-pub fn has_cached_token<R: Runtime>(app: &AppHandle<R>) -> bool {
-    token_cache_path(app).exists()
+/// Whether a persisted token exists for this client id (so we can show
+/// "connected" without triggering the browser flow just to check).
+pub fn has_cached_token<R: Runtime>(app: &AppHandle<R>, client_id: &str) -> bool {
+    token_cache_path(app, client_id).exists()
 }
 
 /// Fetch a fresh (auto-refreshed) Drive access token for the given OAuth client,
@@ -76,7 +85,7 @@ pub async fn access_token<R: Runtime>(
     let secret = application_secret(client_id, client_secret);
     let auth =
         InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-            .persist_tokens_to_disk(token_cache_path(app))
+            .persist_tokens_to_disk(token_cache_path(app, client_id))
             .flow_delegate(Box::new(BrowserDelegate))
             .build()
             .await

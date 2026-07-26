@@ -1,59 +1,142 @@
-//! Discord side of the bot: connect via serenity, decide whether a message is
-//! for us, and drive the model reply. Every step emits activity events so the
-//! chat preview shows what's happening.
+//! Discord side of a single bot: connect via serenity, decide whether a message
+//! is for us, run the ReAct tool-loop, and reply. Every emitted event carries
+//! the bot's id so the UI can scope streams.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serenity::all::{
-    Client, Context, EventHandler, GatewayIntents, GetMessages, Message, Ready, User, UserId,
+    Attachment, ChannelId, Client, Context, EventHandler, GatewayIntents, GetMessages, Message,
+    Ready, User, UserId,
 };
 use serenity::async_trait;
 use tauri::{AppHandle, Manager};
 
 use crate::bot::{self, ActivityKind, BotManager, Decision, Policy};
-use crate::config::BotConfig;
+use crate::config::{self, BotConfig, GlobalConfig};
 use crate::model::{self, ChatMessage};
-use crate::tools;
+use crate::tools::{self, AttachmentRef, AttachmentSink, ResolvedTool};
 
-/// How many recent channel messages to send as context.
-const HISTORY_LIMIT: u8 = 8;
-/// Discord's hard message length limit.
+/// How many recent messages to fetch (covers the raw window plus a batch to
+/// compact once they scroll past it).
+const HISTORY_LIMIT: u8 = 30;
+/// Recent messages kept verbatim in the model context; older ones are folded
+/// into a running summary.
+const RAW_WINDOW: usize = 10;
+/// Compact once at least this many messages have scrolled past the raw window.
+const COMPACT_EVERY: usize = 8;
 const DISCORD_MAX: usize = 2000;
-/// Max model↔tool round-trips per reply.
-const MAX_TOOL_ITERS: usize = 6;
+/// Cap how many messages one reply may be split across, to avoid flooding.
+const MAX_REPLY_MESSAGES: usize = 6;
+const MAX_TOOL_ITERS: usize = 10;
+/// Emit a streaming "thinking" update to the UI every this many new characters.
+const STREAM_EMIT_CHARS: usize = 40;
+/// Cap the attachments considered per message, to bound per-attachment gate calls.
+const MAX_ATTACHMENTS: usize = 10;
+/// Read attachments up to this size inline (covers typical PDFs/docs); larger
+/// files are left to the archiving gate.
+const MAX_ATTACHMENT_BYTES: u32 = 10_000_000;
+const MAX_ATTACHMENT_CHARS: usize = 8000;
 
-/// An open follow-up window for a channel: the bot recently replied here, so it
-/// considers the next few messages from anyone as possibly continuing the
-/// conversation (subject to the relevance gate).
+/// An open follow-up window for a channel.
 struct ActiveConvo {
     count: u32,
     started: Instant,
 }
 
+/// A per-channel rolling summary of messages that have scrolled past the raw
+/// window, so long threads fit in context.
+#[derive(Default)]
+struct ChannelMemory {
+    summary: String,
+    /// Newest message id already folded into `summary`.
+    summarized_through: Option<u64>,
+}
+
 struct Handler {
     app: AppHandle,
-    cfg: BotConfig,
-    windows: Mutex<HashMap<serenity::all::ChannelId, ActiveConvo>>,
+    bot_id: String,
+    bot: BotConfig,
+    catalog: Vec<ResolvedTool>,
+    /// Tools subscribed to the attachment gate (resolved once at start).
+    sinks: Vec<AttachmentSink>,
+    windows: Mutex<HashMap<ChannelId, ActiveConvo>>,
+    convos: Mutex<HashMap<ChannelId, ChannelMemory>>,
 }
 
 impl Handler {
-    fn new(app: AppHandle, cfg: BotConfig) -> Self {
-        Self { app, cfg, windows: Mutex::new(HashMap::new()) }
+    fn new(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalConfig) -> Self {
+        let catalog = tools::catalog(&global, &bot);
+        let sinks = tools::attachment_sinks(&global, &bot);
+        Self {
+            app,
+            bot_id,
+            bot,
+            catalog,
+            sinks,
+            windows: Mutex::new(HashMap::new()),
+            convos: Mutex::new(HashMap::new()),
+        }
     }
 
-    /// Is this channel in an active follow-up window? Consumes one message of
-    /// the window's budget and expires it when spent. Any participant counts —
-    /// the relevance gate decides whether to actually engage.
+    /// Fold messages that have scrolled past the raw window into this channel's
+    /// running summary (only when enough have accumulated), and return the
+    /// current summary. `history` is newest-first.
+    async fn compact(&self, channel_id: ChannelId, history: &[Message]) -> String {
+        let (previous, through) = {
+            let convos = self.convos.lock().unwrap();
+            match convos.get(&channel_id) {
+                Some(mem) => (mem.summary.clone(), mem.summarized_through),
+                None => (String::new(), None),
+            }
+        };
+
+        // Older-than-window messages not yet folded (still newest-first).
+        let to_fold: Vec<&Message> = history
+            .iter()
+            .skip(RAW_WINDOW)
+            .filter(|m| through.map_or(true, |t| m.id.get() > t))
+            .collect();
+        if to_fold.len() < COMPACT_EVERY {
+            return previous;
+        }
+
+        let newest_id = to_fold.first().map(|m| m.id.get());
+        let text = to_fold
+            .iter()
+            .rev() // oldest-first for a readable summary
+            .map(|m| format!("{}: {}", m.author.name, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let summary = match model::summarize_conversation(&self.bot, &previous, &text).await {
+            Ok(summary) => summary,
+            Err(_) => return previous,
+        };
+
+        {
+            let mut convos = self.convos.lock().unwrap();
+            let mem = convos.entry(channel_id).or_default();
+            mem.summary = summary.clone();
+            mem.summarized_through = newest_id;
+        }
+        bot::emit_log(
+            &self.app,
+            &self.bot_id,
+            format!("compacted {} older message(s) into the running summary", to_fold.len()),
+        );
+        summary
+    }
+
     fn in_window(&self, msg: &Message) -> bool {
         let mut windows = self.windows.lock().unwrap();
         let Some(convo) = windows.get_mut(&msg.channel_id) else {
             return false;
         };
         let expired = convo.started.elapsed()
-            > Duration::from_secs(self.cfg.followup_window_secs)
-            || convo.count >= self.cfg.followup_window_messages;
+            > Duration::from_secs(self.bot.followup_window_secs)
+            || convo.count >= self.bot.followup_window_messages;
         if expired {
             windows.remove(&msg.channel_id);
             return false;
@@ -62,7 +145,6 @@ impl Handler {
         true
     }
 
-    /// (Re)open the follow-up window after the bot replies in a channel.
     fn refresh_window(&self, msg: &Message) {
         self.windows
             .lock()
@@ -81,6 +163,7 @@ impl Handler {
         let channel = channel_label(ctx, msg).await;
         bot::emit_activity(
             &self.app,
+            &self.bot_id,
             ActivityKind::Message,
             Some(msg.author.name.clone()),
             channel.clone(),
@@ -88,30 +171,42 @@ impl Handler {
         );
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
-        // ReAct loop: model → (maybe) tool call → result → model → … → answer.
-        // Always ends by sending *something* to Discord (final answer, error, or
-        // a fallback) so the bot never goes silent mid-loop.
-        let mut messages = build_messages(&self.cfg, history, msg, bot_id, bot_name);
+        // Read text-ish attachments inline so the model can act on them this turn.
+        let attachments = self.attachment_texts(msg).await;
+        // Fold older messages into a running summary so long threads fit.
+        let summary = self.compact(msg.channel_id, history).await;
+        let mut messages =
+            self.build_messages(history, msg, bot_id, bot_name, &attachments, &summary);
         let mut final_text: Option<String> = None;
         let mut error: Option<String> = None;
+        let mut sources: Vec<String> = Vec::new();
 
         for _ in 0..MAX_TOOL_ITERS {
-            bot::emit_activity(
-                &self.app,
-                ActivityKind::ModelCall,
-                None,
-                None,
-                format!("→ {}", self.cfg.model_name),
-            );
-            let (text, metrics) = match model::chat(&self.cfg, messages.clone()).await {
+            // Live "thinking" entry the UI fills in as tokens stream, so a loop
+            // is visible.
+            let stream_id = bot::stream_start(&self.app, &self.bot_id);
+            let app = self.app.clone();
+            let bot_id = self.bot_id.clone();
+            let sid = stream_id.clone();
+            let mut emitted = 0usize;
+            let result = model::chat(&self.bot, messages.clone(), |accumulated: &str| {
+                if accumulated.len() >= emitted + STREAM_EMIT_CHARS {
+                    emitted = accumulated.len();
+                    bot::stream_update(&app, &bot_id, &sid, accumulated);
+                }
+            })
+            .await;
+            let (text, metrics) = match result {
                 Ok(result) => result,
                 Err(e) => {
-                    bot::emit_log(&self.app, format!("Model error: {e}"));
+                    bot::emit_log(&self.app, &self.bot_id, format!("Model error: {e}"));
                     error = Some(e);
                     break;
                 }
             };
-            bot::emit_metrics(&self.app, metrics);
+            // Final content (flush any un-emitted tail).
+            bot::stream_update(&self.app, &self.bot_id, &stream_id, &text);
+            bot::emit_metrics(&self.app, &self.bot_id, metrics);
 
             match model::parse_tool_call(&text) {
                 None => {
@@ -119,9 +214,8 @@ impl Handler {
                     break;
                 }
                 Some(call) => {
-                    let result = self.run_tool(&call).await;
+                    let result = self.run_tool(&ctx, msg.channel_id, &call, &mut sources).await;
                     messages.push(ChatMessage::assistant(text));
-                    // Nudge the model to keep going or to wrap up explicitly.
                     messages.push(ChatMessage::user(format!(
                         "TOOL_RESULT: {result}\n(If more steps are needed, output the next \
                          TOOL_CALL; otherwise reply with your final answer to the user.)"
@@ -138,82 +232,249 @@ impl Handler {
             if cleaned.is_empty() {
                 "I ran the tools but didn't produce a final answer.".to_string()
             } else {
-                cleaned
+                with_sources(&sources, &cleaned)
             }
         };
         bot::emit_activity(
             &self.app,
+            &self.bot_id,
             ActivityKind::Reply,
-            Some("openbot".into()),
+            Some(self.bot.name.clone()),
             channel,
             reply.clone(),
         );
-        if let Err(e) = msg.channel_id.say(&ctx.http, truncate(&reply, DISCORD_MAX)).await {
-            bot::emit_log(&self.app, format!("Failed to send reply: {e}"));
+        for chunk in split_message(&reply, DISCORD_MAX) {
+            if let Err(e) = msg.channel_id.say(&ctx.http, chunk).await {
+                bot::emit_log(&self.app, &self.bot_id, format!("Failed to send reply: {e}"));
+                break;
+            }
         }
         self.refresh_window(msg);
     }
 
-    /// Run one parsed tool call, subject to its policy (allow / ask / deny).
-    /// Returns the result string to feed back to the model.
-    async fn run_tool(&self, call: &model::ToolCall) -> String {
+    async fn run_tool(
+        &self,
+        ctx: &Context,
+        channel_id: ChannelId,
+        call: &model::ToolCall,
+        sources: &mut Vec<String>,
+    ) -> String {
         let name = call.tool.as_str();
-        bot::emit_activity(
-            &self.app,
-            ActivityKind::ToolCall,
-            None,
-            None,
-            format!("{name} {}", call.args),
-        );
 
-        let spec = tools::find(name);
-        let Some(spec) = spec else {
+        let Some(tool) = tools::find(&self.catalog, name) else {
+            bot::emit_log(&self.app, &self.bot_id, format!("unknown tool '{name}'"));
             return format!("error: unknown tool '{name}'");
         };
 
-        // Fresh config so an "always allow/deny" set mid-session takes effect now.
-        let cfg = crate::config::load(&self.app);
-        let allowed = match bot::policy_for(&cfg, name, spec.write) {
+        // Fresh bot config so an "always allow/deny" set mid-session applies now.
+        let policy_key = tool.policy_key();
+        let fresh = config::load_bot(&self.app, &self.bot_id).unwrap_or_else(|| self.bot.clone());
+        let allowed = match bot::policy_for(&fresh, &policy_key, tool.is_write()) {
             Policy::Allow => true,
             Policy::Deny => {
-                bot::emit_log(&self.app, format!("{name}: denied by policy"));
+                bot::emit_log(&self.app, &self.bot_id, format!("{name}: denied by policy"));
                 return "denied by policy".to_string();
             }
-            Policy::Ask => match bot::request_approval(&self.app, name, &call.args).await {
+            Policy::Ask => match bot::request_approval(&self.app, &self.bot_id, name, &call.args).await
+            {
                 Decision::Approve => true,
                 Decision::Deny => false,
                 Decision::AlwaysAllow => {
-                    crate::config::set_tool_policy(&self.app, name, "allow");
+                    config::set_tool_policy(&self.app, &self.bot_id, &policy_key, "allow");
                     true
                 }
                 Decision::AlwaysDeny => {
-                    crate::config::set_tool_policy(&self.app, name, "deny");
+                    config::set_tool_policy(&self.app, &self.bot_id, &policy_key, "deny");
                     false
                 }
             },
         };
         if !allowed {
-            bot::emit_log(&self.app, format!("{name}: denied"));
+            bot::emit_log(&self.app, &self.bot_id, format!("{name}: denied"));
             return "denied by user".to_string();
         }
 
-        let result = tools::execute(&self.app, &self.cfg, name, &call.args).await;
-        bot::emit_log(&self.app, format!("{name} → {}", first_line(&result)));
+        let result = if tool.is_backfill() {
+            self.backfill(ctx, channel_id, tool, &call.args).await
+        } else {
+            tools::execute(&self.app, &self.bot_id, tool, &call.args).await
+        };
+        for url in tool.source_urls(&call.args, &result) {
+            if !sources.contains(&url) {
+                sources.push(url);
+            }
+        }
+        bot::emit_tool_activity(
+            &self.app,
+            &self.bot_id,
+            format!("{name} {} → {}", call.args, first_line(&result)),
+            tool.summary(&call.args, &result),
+        );
         result
+    }
+
+    /// Extract text from the trigger message's attachments so their content can
+    /// be read inline this turn (the user attaches a file and asks the bot to act
+    /// on it). Handles text-ish files and PDFs; bounded by size + char cap.
+    async fn attachment_texts(&self, msg: &Message) -> Vec<(String, String)> {
+        if !self.bot.attachments_enabled {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for a in msg.attachments.iter().take(MAX_ATTACHMENTS) {
+            if a.size > MAX_ATTACHMENT_BYTES {
+                continue; // too big to read inline (may still be archived by the gate)
+            }
+            let bytes = match download_bytes(&a.url).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    bot::emit_log(
+                        &self.app,
+                        &self.bot_id,
+                        format!("attachment \"{}\": read failed: {e}", a.filename),
+                    );
+                    continue;
+                }
+            };
+            // PDF parsing is CPU-bound — keep it off the async runtime.
+            let filename = a.filename.clone();
+            let mime = a.content_type.clone().unwrap_or_default();
+            let text = tokio::task::spawn_blocking(move || {
+                crate::ingest::extract_text(&bytes, &filename, &mime)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(text) = text {
+                out.push((a.filename.clone(), truncate(text.trim(), MAX_ATTACHMENT_CHARS)));
+            }
+        }
+        out
+    }
+
+    /// Forward each attachment on a message to every subscribed sink.
+    async fn dispatch_attachments(&self, msg: &Message) {
+        let context = format!("{}: {}", msg.author.name, msg.content);
+        for attachment in msg.attachments.iter().take(MAX_ATTACHMENTS) {
+            let att = attachment_ref(attachment);
+            for sink in &self.sinks {
+                tools::deliver_attachment(&self.app, &self.bot, sink, &att, &context).await;
+            }
+        }
+    }
+
+    /// On-demand backfill: sweep recent channel history and run found
+    /// attachments through this Drive tool's archiving gate.
+    async fn backfill(
+        &self,
+        ctx: &Context,
+        channel_id: ChannelId,
+        tool: &ResolvedTool,
+        args: &serde_json::Value,
+    ) -> String {
+        let Some(sink) = tool.drive_sink() else {
+            return "error: not a Drive tool".to_string();
+        };
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30)
+            .clamp(1, 100) as u8;
+
+        let messages = channel_id
+            .messages(&ctx.http, GetMessages::new().limit(limit))
+            .await
+            .unwrap_or_default();
+
+        let mut scanned = 0usize;
+        let mut archived = 0usize;
+        for m in &messages {
+            scanned += 1;
+            for attachment in m.attachments.iter().take(MAX_ATTACHMENTS) {
+                let att = attachment_ref(attachment);
+                let context = format!("{}: {}", m.author.name, m.content);
+                if tools::deliver_attachment(&self.app, &self.bot, &sink, &att, &context).await {
+                    archived += 1;
+                }
+            }
+        }
+        format!("scanned {scanned} messages, archived {archived} file(s)")
+    }
+
+    fn build_messages(
+        &self,
+        history: &[Message],
+        msg: &Message,
+        bot_id: UserId,
+        bot_name: &str,
+        attachments: &[(String, String)],
+        summary: &str,
+    ) -> Vec<ChatMessage> {
+        let identity = format!(
+            "You are taking part in a Discord conversation as \"{bot_name}\". When a message \
+             contains @{bot_name} or replies to you, it is addressed to you — respond directly and \
+             in character. Do not narrate or summarise the conversation unless explicitly asked."
+        );
+        let mut system = format!("{}\n\n{}", self.bot.system_prompt, identity);
+        if !self.catalog.is_empty() {
+            system.push_str(&tools::prompt_section(&self.catalog));
+        }
+        if !summary.trim().is_empty() {
+            system.push_str(&format!(
+                "\n\n## Earlier conversation (summary of messages before the recent ones)\n{summary}"
+            ));
+        }
+        if !attachments.is_empty() {
+            system.push_str(
+                "\n\nThe user's message includes attached file contents inline (marked \
+                 [Attached file …]). Read them and act on any instructions they contain.",
+            );
+        }
+        // Load memories fresh so ones saved this session apply next turn.
+        if self.bot.memory_enabled {
+            let memories = crate::memory::load(&self.app, &self.bot_id);
+            system.push_str(&crate::memory::system_section(&memories));
+        }
+        let mut messages = vec![ChatMessage::system(system)];
+
+        // Only the recent raw window goes in verbatim (oldest-first); older
+        // messages are represented by the summary above.
+        for m in history.iter().take(RAW_WINDOW).rev() {
+            let content = humanize(&m.content, &m.mentions, bot_id, bot_name);
+            if content.trim().is_empty() {
+                continue;
+            }
+            if m.author.id == bot_id {
+                messages.push(ChatMessage::assistant(content));
+            } else {
+                messages.push(ChatMessage::user(format!("{}: {}", m.author.name, content)));
+            }
+        }
+
+        let mut trigger = humanize(&msg.content, &msg.mentions, bot_id, bot_name);
+        for (name, text) in attachments {
+            trigger.push_str(&format!("\n\n[Attached file \"{name}\":\n{text}\n]"));
+        }
+        messages.push(ChatMessage::user(format!("{}: {}", msg.author.name, trigger)));
+        messages
     }
 }
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, _ctx: Context, ready: Ready) {
-        bot::emit_log(&self.app, format!("Connected to Discord as {}", ready.user.name));
+        bot::emit_log(
+            &self.app,
+            &self.bot_id,
+            format!("Connected to Discord as {}", ready.user.name),
+        );
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
         if msg.author.bot {
             return;
         }
-        let (bot_id, bot_name) = {
+        let (bot_user_id, bot_user_name) = {
             let me = ctx.cache.current_user();
             (me.id, me.name.clone())
         };
@@ -223,11 +484,17 @@ impl EventHandler for Handler {
             || msg
                 .referenced_message
                 .as_ref()
-                .is_some_and(|r| r.author.id == bot_id);
+                .is_some_and(|r| r.author.id == bot_user_id);
 
         let in_window = self.in_window(&msg);
         if !explicit && !in_window {
             return;
+        }
+
+        // Forward any attachments to subscribed tools (independent of whether we
+        // reply), so files in an active conversation are still considered.
+        if self.bot.attachments_enabled && !self.sinks.is_empty() && !msg.attachments.is_empty() {
+            self.dispatch_attachments(&msg).await;
         }
 
         let history = msg
@@ -236,13 +503,15 @@ impl EventHandler for Handler {
             .await
             .unwrap_or_default();
 
-        // Follow-up (no explicit signal): ask the model if the bot should engage.
         if !explicit {
-            let context = render_context(&history, bot_id);
-            bot::emit_log(&self.app, "follow-up: checking relevance…");
-            let engage = model::should_engage(&self.cfg, &context, &msg.content).await;
+            // Only the recent window matters for the relevance gate.
+            let recent = &history[..history.len().min(RAW_WINDOW)];
+            let context = render_context(recent, bot_user_id);
+            bot::emit_log(&self.app, &self.bot_id, "follow-up: checking relevance…");
+            let engage = model::should_engage(&self.bot, &context, &msg.content).await;
             bot::emit_log(
                 &self.app,
+                &self.bot_id,
                 format!("follow-up: {}", if engage { "yes — replying" } else { "no — ignoring" }),
             );
             if !engage {
@@ -250,80 +519,39 @@ impl EventHandler for Handler {
             }
         }
 
-        self.reply(&ctx, &msg, &history, bot_id, &bot_name).await;
+        self.reply(&ctx, &msg, &history, bot_user_id, &bot_user_name).await;
     }
 }
 
-/// Supervisor: build and run the client until it stops, keeping the shard
-/// manager registered so a Stop can shut it down. Reports failures as logs.
-pub async fn run(app: AppHandle, cfg: BotConfig) {
-    bot::emit_log(&app, "Connecting to Discord…");
+/// Supervisor: build and run one bot's client until it stops, then mark it
+/// stopped so the UI updates.
+pub async fn run(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalConfig) {
+    bot::emit_log(&app, &bot_id, "Connecting to Discord…");
     let intents = GatewayIntents::non_privileged()
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::DIRECT_MESSAGES;
 
-    let handler = Handler::new(app.clone(), cfg.clone());
-    let mut client = match Client::builder(&cfg.discord_token, intents)
-        .event_handler(handler)
-        .await
-    {
+    let token = bot.discord_token.clone();
+    let handler = Handler::new(app.clone(), bot_id.clone(), bot, global);
+    let mut client = match Client::builder(&token, intents).event_handler(handler).await {
         Ok(client) => client,
         Err(e) => {
-            bot::emit_log(&app, format!("Discord connection failed: {e}"));
-            bot::set_running(&app, false);
+            bot::emit_log(&app, &bot_id, format!("Discord connection failed: {e}"));
+            bot::stop(&app, &bot_id);
             return;
         }
     };
 
-    app.state::<BotManager>().set_shard_manager(client.shard_manager.clone());
+    app.state::<BotManager>().set_shard_manager(&bot_id, client.shard_manager.clone());
 
     if let Err(e) = client.start().await {
-        bot::emit_log(&app, format!("Discord gateway error: {e}"));
+        bot::emit_log(&app, &bot_id, format!("Discord gateway error: {e}"));
     }
-    // Gateway ended (stopped or errored) — make sure state reflects it.
-    bot::set_running(&app, false);
+    bot::stop(&app, &bot_id);
 }
 
-fn build_messages(
-    cfg: &BotConfig,
-    history: &[Message],
-    msg: &Message,
-    bot_id: UserId,
-    bot_name: &str,
-) -> Vec<ChatMessage> {
-    // Tell the model who it is, so it recognises its own @mention instead of
-    // treating itself as a third party and narrating the conversation.
-    let identity = format!(
-        "You are taking part in a Discord conversation as \"{bot_name}\". When a message contains \
-         @{bot_name} or replies to you, it is addressed to you — respond to it directly and in \
-         character. Do not narrate or summarise the conversation unless you are explicitly asked to."
-    );
-    let mut system = format!("{}\n\n{}", cfg.system_prompt, identity);
-    if tools::available(cfg) {
-        system.push_str(&tools::prompt_section());
-    }
-    let mut messages = vec![ChatMessage::system(system)];
-
-    // `history` is newest-first; feed it oldest-first.
-    for m in history.iter().rev() {
-        let content = humanize(&m.content, &m.mentions, bot_id, bot_name);
-        if content.trim().is_empty() {
-            continue;
-        }
-        if m.author.id == bot_id {
-            messages.push(ChatMessage::assistant(content));
-        } else {
-            messages.push(ChatMessage::user(format!("{}: {}", m.author.name, content)));
-        }
-    }
-
-    let trigger = humanize(&msg.content, &msg.mentions, bot_id, bot_name);
-    messages.push(ChatMessage::user(format!("{}: {}", msg.author.name, trigger)));
-    messages
-}
-
-/// Replace raw Discord mention tokens (`<@id>`) with readable `@name`s. The
-/// bot's own mention becomes its name so the model knows it's being addressed.
+/// Replace raw Discord mention tokens (`<@id>`) with readable `@name`s so the
+/// model knows when it's being addressed.
 fn humanize(content: &str, mentions: &[User], bot_id: UserId, bot_name: &str) -> String {
     let mut out = content.to_string();
     for user in mentions {
@@ -334,8 +562,6 @@ fn humanize(content: &str, mentions: &[User], bot_id: UserId, bot_name: &str) ->
     out
 }
 
-/// Human-readable channel label for the activity feed: the channel name, or
-/// "DM" for direct messages.
 async fn channel_label(ctx: &Context, msg: &Message) -> Option<String> {
     if msg.guild_id.is_none() {
         return Some("DM".into());
@@ -367,13 +593,89 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out
 }
 
-/// First line of a string, for compact activity logs.
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("").trim()
 }
 
-/// Strip internal ReAct scaffolding the model sometimes echoes, so Discord only
-/// sees the human-facing answer.
+/// Split a reply into Discord-sized messages, breaking on paragraph/line/word
+/// boundaries where possible. Capped at `MAX_REPLY_MESSAGES` so a runaway reply
+/// can't flood a channel; the last piece is marked if content was dropped.
+fn split_message(text: &str, max: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return vec![text.to_string()];
+    }
+
+    let mut parts = Vec::new();
+    let mut start = 0;
+    while start < chars.len() && parts.len() < MAX_REPLY_MESSAGES {
+        let hard_end = (start + max).min(chars.len());
+        let end = if hard_end == chars.len() {
+            hard_end
+        } else {
+            let slice = &chars[start..hard_end];
+            match slice
+                .iter()
+                .rposition(|&c| c == '\n')
+                .or_else(|| slice.iter().rposition(|&c| c.is_whitespace()))
+            {
+                Some(rel) if rel > 0 => start + rel + 1,
+                _ => hard_end,
+            }
+        };
+        let piece: String = chars[start..end].iter().collect();
+        let piece = piece.trim().to_string();
+        if !piece.is_empty() {
+            parts.push(piece);
+        }
+        start = end;
+    }
+
+    if start < chars.len() {
+        if let Some(last) = parts.last_mut() {
+            last.push_str(" …(truncated)");
+        }
+    }
+    parts
+}
+
+fn attachment_ref(a: &Attachment) -> AttachmentRef {
+    AttachmentRef {
+        filename: a.filename.clone(),
+        content_type: a.content_type.clone().unwrap_or_default(),
+        url: a.url.clone(),
+    }
+}
+
+async fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let resp = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("read failed: {e}"))
+}
+
+/// Prepend a compact "Sources" header (deduped, capped) when web tools were
+/// used. `<url>` angle brackets suppress Discord's link previews.
+fn with_sources(sources: &[String], reply: &str) -> String {
+    if sources.is_empty() {
+        return reply.to_string();
+    }
+    const MAX_SOURCES: usize = 5;
+    let list = sources
+        .iter()
+        .take(MAX_SOURCES)
+        .map(|u| format!("<{u}>"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("**Sources**\n{list}\n\n{reply}")
+}
+
+/// Strip internal ReAct scaffolding the model sometimes echoes.
 fn sanitize_reply(text: &str) -> String {
     text.lines()
         .filter(|line| {

@@ -27,9 +27,19 @@ serenity = { version = "0.12", default-features = false, features = [
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
+    "stream",
 ] }
+# Stream combinators for parsing the model server's SSE token stream.
+futures-util = "0.3"
 yup-oauth2 = "12.1.2"
 open = "5"
+# Tiny localhost control API (list/start/stop bots) — see api.rs.
+tiny_http = "0.12"
+# Local knowledge index (embeddings + FTS5) — see knowledge.rs. Bundled build
+# compiles SQLite with FTS5, so no system dependency or native extension.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Text extraction from PDFs (text-based; OCR deferred) — see ingest.rs.
+pdf-extract = "0.7"
 
 # macOS: intercept the Quit AppleEvent the OS fires once the window is hidden,
 # so the app keeps running from the tray (see macos.rs).

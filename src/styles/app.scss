@@ -3,6 +3,9 @@
 // here we handle structure, the draggable title bar, and a few neutral accents.
 
 $border-faint: rgba(128, 128, 128, 0.1);
+// Shared height for the bottom bars (sidebar "General settings" + content footer)
+// so they always line up.
+$bar-height: 52px;
 
 html,
 body,
@@ -14,27 +17,229 @@ body,
   overflow: hidden;
 }
 
+// A floating surface card. Every region (sidebar list, settings button, content,
+// footer) is one of these, so the shell reads as aligned panels.
+.panel {
+  background: var(--chakra-colors-bg-panel);
+  border: 1px solid var(--chakra-colors-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+// Modifier: panels inside this region drop their card chrome and sit flat on the
+// window background (used for the content column).
+.rail-plain .panel {
+  background: transparent;
+  border: none;
+}
+
+// Floating-label input: the label sits inside the field and lifts on focus/fill.
+.floating-field {
+  position: relative;
+  width: 100%;
+}
+
+.floating-input {
+  width: 100%;
+  height: 52px;
+  padding: 20px 12px 6px;
+  border: 1px solid var(--chakra-colors-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--chakra-colors-fg);
+  font-size: 14px;
+  transition: border-color 0.12s ease;
+
+  &::placeholder {
+    color: transparent;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: var(--chakra-colors-brand-solid);
+  }
+}
+
+.floating-label {
+  position: absolute;
+  left: 12px;
+  top: 15px;
+  font-size: 14px;
+  color: var(--chakra-colors-fg-muted);
+  pointer-events: none;
+  transition: all 0.12s ease;
+}
+
+.floating-input:focus + .floating-label,
+.floating-input:not(:placeholder-shown) + .floating-label {
+  top: 7px;
+  font-size: 11px;
+}
+
+// A small uppercase caption placed above a panel.
+.section-label {
+  padding: 0 6px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--chakra-colors-fg-muted);
+}
+
 // Transparent macOS overlay title bar. Draggable; no text selection.
 .titlebar {
   user-select: none;
   -webkit-user-select: none;
 }
 
-// Floating, inset sidebar panel (background/border come from Chakra props).
+// Left rail: a column of panels (bots list + settings button).
 .sidebar {
-  width: 200px;
+  width: 210px;
   flex-shrink: 0;
-  padding: 14px 12px;
 }
 
-// Right pane: baked into the window background, no border. Sits high since the
-// title bar is transparent/overlaid.
+.sidebar-head {
+  padding: 6px 8px;
+}
+
+.bot-list {
+  min-height: 0;
+}
+
+.bot-row {
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(128, 128, 128, 0.08);
+  }
+
+  &.is-selected {
+    background: var(--chakra-colors-colorPalette-subtle, rgba(76, 139, 245, 0.16));
+  }
+}
+
+.bot-avatar {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+// Settings button: its own panel at the bottom of the rail, height-matched to
+// the content footer.
+.sidebar-foot {
+  flex-shrink: 0;
+  height: $bar-height;
+  padding: 0 12px;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(128, 128, 128, 0.08);
+  }
+
+  &.is-selected {
+    background: var(--chakra-colors-colorPalette-subtle, rgba(76, 139, 245, 0.16));
+  }
+}
+
+// Gentle tab bar at the top of a settings pane.
+.tabbar {
+  flex-wrap: wrap;
+}
+
+// Color swatch picker (bot color).
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+
+  &.is-active {
+    border-color: var(--chakra-colors-fg);
+  }
+}
+
+.tool-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+// Collapsible list card (e.g. a tool's approvals list) — one contained box whose
+// header and body share the border.
+.collapsible {
+  border: 1px solid var(--chakra-colors-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.collapsible-head {
+  min-height: 40px;
+  padding: 9px 12px;
+  cursor: pointer;
+  user-select: none;
+
+  &:hover {
+    background: rgba(128, 128, 128, 0.06);
+  }
+}
+
+.collapsible-caret {
+  flex-shrink: 0;
+  color: var(--chakra-colors-fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.collapsible-head[data-state="open"] .collapsible-caret {
+  transform: rotate(90deg);
+}
+
+.collapsible-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--chakra-colors-border);
+}
+
+// Per-op allow/ask/deny picker in the bot Tools tab.
+.policy-select {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 13px;
+  border: 1px solid $border-faint;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.06);
+  color: var(--chakra-colors-fg);
+  cursor: pointer;
+}
+
+// A row in a settings list (e.g. tool instances).
+.list-row {
+  padding: 8px 10px;
+  border: 1px solid $border-faint;
+  border-radius: 8px;
+
+  &:hover {
+    background: rgba(128, 128, 128, 0.06);
+  }
+}
+
+// Right pane: baked into the window background. Sits high since the title bar
+// is transparent/overlaid. A subtle rule (matching the status bar's) separates
+// the tabs from the content below.
 .pane-title {
-  padding: 4px 20px 12px;
+  padding: 12px;
+  border-bottom: 1px solid $border-faint;
 }
 
 .feed {
-  padding: 4px 20px 16px;
+  padding: 12px;
 }
 
 .activity-row {
@@ -48,9 +253,49 @@ body,
   }
 }
 
+// Timestamp sits at the far right; revealed on row hover (or always in verbose).
 .activity-time {
-  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.activity-row:hover .activity-time,
+.activity-time.is-visible {
+  opacity: 1;
+}
+
+// Active tab: a gentle neutral fill that blends with the palette.
+.tabbar .tab-active {
+  background: var(--chakra-colors-bg-emphasized);
+  color: var(--chakra-colors-fg);
+}
+
+// Collapsible "Thinking" block: streamed model output, collapsed by default.
+.thinking-toggle {
+  font-size: 14px;
+  color: var(--chakra-colors-fg-muted);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+}
+
+.thinking-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--chakra-colors-fg-muted);
 }
 
 .settings-card {
@@ -95,12 +340,16 @@ body,
   }
 }
 
-// Slim status strip at the bottom of the content column (right of the sidebar).
-.status-bar {
+// Content footer: a panel height-matched to the sidebar settings button, so the
+// bottom row lines up across both columns. Status (chat) or actions (settings).
+.footer-bar {
   flex-shrink: 0;
-  height: 30px;
-  padding: 0 20px;
-  border-top: 1px solid $border-faint;
+  min-height: $bar-height;
+  padding: 12px;
+}
+
+// Status-strip typography (composed onto .footer-bar on the chat tab).
+.status-bar {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--chakra-colors-fg-muted);

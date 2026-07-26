@@ -3,13 +3,18 @@
 
 #[cfg(target_os = "macos")]
 mod macos;
+mod api;
 mod bot;
 mod config;
 mod discord;
 mod gdrive;
+mod ingest;
+mod knowledge;
+mod memory;
 mod model;
 mod tools;
 mod tray;
+mod websearch;
 mod window;
 
 use tauri::Manager;
@@ -22,7 +27,12 @@ fn main() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             macos::intercept_quit_apple_event();
+            // Migrate the old single config into { global, bots } if needed, so
+            // the UI reads the new shape.
+            let _ = config::load_bots(app.handle());
             tray::create_tray(app.handle())?;
+            // Localhost control API (list/start/stop bots) — see api.rs.
+            api::start(app.handle().clone());
             Ok(())
         })
         // Closing the window hides it (and drops the dock icon) instead of
@@ -38,11 +48,14 @@ fn main() {
             window::show_main_window,
             bot::start_bot,
             bot::stop_bot,
-            bot::get_bot_status,
             bot::restart_bot,
+            bot::get_running_bots,
+            bot::resolve_tool_approval,
             gdrive::connect_drive,
             gdrive::drive_status,
-            bot::resolve_tool_approval
+            memory::get_memories,
+            memory::delete_memory,
+            memory::clear_memories
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
