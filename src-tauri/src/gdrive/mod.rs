@@ -46,7 +46,11 @@ async fn error_body(resp: reqwest::Response) -> String {
 }
 
 /// Connected account's email, for the tool's status line.
-pub async fn whoami(app: &AppHandle, client_id: &str, client_secret: &str) -> Result<String, String> {
+pub async fn whoami(
+    app: &AppHandle,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<String, String> {
     #[derive(Deserialize)]
     struct About {
         user: Option<User>,
@@ -68,7 +72,10 @@ pub async fn whoami(app: &AppHandle, client_id: &str, client_secret: &str) -> Re
     if !resp.status().is_success() {
         return Err(error_body(resp).await);
     }
-    let about: About = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let about: About = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     about
         .user
         .and_then(|u| u.email_address)
@@ -96,7 +103,10 @@ async fn list_query(
     if !resp.status().is_success() {
         return Err(error_body(resp).await);
     }
-    let list: FileList = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let list: FileList = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     Ok(list.files)
 }
 
@@ -157,7 +167,9 @@ async fn folder_subtree(
             "'{}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
             esc(&parent)
         );
-        let subfolders = list_query(app, client_id, client_secret, &q).await.unwrap_or_default();
+        let subfolders = list_query(app, client_id, client_secret, &q)
+            .await
+            .unwrap_or_default();
         for f in subfolders {
             if ids.len() >= MAX_FOLDERS {
                 break;
@@ -215,7 +227,9 @@ pub async fn read(
         if !resp.status().is_success() {
             return Err(error_body(resp).await);
         }
-        resp.json().await.map_err(|e| format!("bad response: {e}"))?
+        resp.json()
+            .await
+            .map_err(|e| format!("bad response: {e}"))?
     };
 
     let request = if meta.mime_type == "application/vnd.google-apps.document" {
@@ -251,7 +265,9 @@ pub async fn read(
     if !resp.status().is_success() {
         return Err(error_body(resp).await);
     }
-    resp.text().await.map_err(|e| format!("failed to read content: {e}"))
+    resp.text()
+        .await
+        .map_err(|e| format!("failed to read content: {e}"))
 }
 
 /// Extract a PDF's text via Drive: copy it into a temporary Google Doc (which
@@ -282,7 +298,10 @@ async fn read_pdf(
     if !resp.status().is_success() {
         return Err(error_body(resp).await);
     }
-    let temp: Copied = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let temp: Copied = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
 
     let export = client
         .get(format!("{DRIVE_API}/files/{}/export", temp.id))
@@ -292,9 +311,10 @@ async fn read_pdf(
         .await;
 
     let result = match export {
-        Ok(resp) if resp.status().is_success() => {
-            resp.text().await.map_err(|e| format!("failed to read content: {e}"))
-        }
+        Ok(resp) if resp.status().is_success() => resp
+            .text()
+            .await
+            .map_err(|e| format!("failed to read content: {e}")),
         Ok(resp) => Err(error_body(resp).await),
         Err(e) => Err(format!("request failed: {e}")),
     };
@@ -333,7 +353,10 @@ pub async fn create_folder(
     struct Created {
         id: String,
     }
-    let created: Created = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let created: Created = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     Ok(created.id)
 }
 
@@ -363,17 +386,18 @@ pub async fn create(
     let metadata = json!({ "name": name, "parents": [folder_id] });
     let boundary = "openbot_related_boundary";
     let body = format!(
-        "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n\
-         --{b}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{content}\r\n--{b}--",
-        b = boundary,
-        meta = metadata,
+        "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\
+         --{boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{content}\r\n--{boundary}--",
     );
 
     let resp = reqwest::Client::new()
         .post(format!("{DRIVE_UPLOAD}/files"))
         .query(&[("uploadType", "multipart"), ("fields", "id")])
         .bearer_auth(&tok)
-        .header("Content-Type", format!("multipart/related; boundary={boundary}"))
+        .header(
+            "Content-Type",
+            format!("multipart/related; boundary={boundary}"),
+        )
         .body(body)
         .send()
         .await
@@ -386,7 +410,10 @@ pub async fn create(
     struct Created {
         id: String,
     }
-    let created: Created = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let created: Created = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     Ok(created.id)
 }
 
@@ -404,15 +431,17 @@ pub async fn upload_binary(
     let tok = token(app, client_id, client_secret).await?;
     let metadata = json!({ "name": name, "parents": [folder_id] });
     let boundary = "openbot_related_boundary";
-    let mime = if mime.trim().is_empty() { "application/octet-stream" } else { mime };
+    let mime = if mime.trim().is_empty() {
+        "application/octet-stream"
+    } else {
+        mime
+    };
 
     let mut body: Vec<u8> = Vec::new();
     body.extend_from_slice(
         format!(
-            "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n\
-             --{b}\r\nContent-Type: {mime}\r\n\r\n",
-            b = boundary,
-            meta = metadata,
+            "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\
+             --{boundary}\r\nContent-Type: {mime}\r\n\r\n",
         )
         .as_bytes(),
     );
@@ -423,7 +452,10 @@ pub async fn upload_binary(
         .post(format!("{DRIVE_UPLOAD}/files"))
         .query(&[("uploadType", "multipart"), ("fields", "id")])
         .bearer_auth(&tok)
-        .header("Content-Type", format!("multipart/related; boundary={boundary}"))
+        .header(
+            "Content-Type",
+            format!("multipart/related; boundary={boundary}"),
+        )
         .body(body)
         .send()
         .await
@@ -436,7 +468,10 @@ pub async fn upload_binary(
     struct Created {
         id: String,
     }
-    let created: Created = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let created: Created = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     Ok(created.id)
 }
 

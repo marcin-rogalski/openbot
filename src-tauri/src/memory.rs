@@ -31,7 +31,12 @@ pub struct Memory {
 
 impl Default for Memory {
     fn default() -> Self {
-        Self { id: String::new(), kind: "note".into(), text: String::new(), created: 0 }
+        Self {
+            id: String::new(),
+            kind: "note".into(),
+            text: String::new(),
+            created: 0,
+        }
     }
 }
 
@@ -100,7 +105,11 @@ pub async fn save(app: &AppHandle, bot_id: &str, kind: &str, text: &str) -> Stri
     if over_budget(&memories, &bot) {
         let before = memories.len();
         let after = enforce_budget(app, bot_id, &bot, memories).await;
-        bot::emit_log(app, bot_id, format!("memory: consolidated {before} → {after} entries"));
+        bot::emit_log(
+            app,
+            bot_id,
+            format!("memory: consolidated {before} → {after} entries"),
+        );
     }
     format!("saved {kind}")
 }
@@ -174,9 +183,7 @@ fn fifo_trim(memories: Vec<Memory>, bot: &BotConfig) -> Vec<Memory> {
         notes.remove(0);
     }
     let rule_chars: usize = total_chars(&rules);
-    while !notes.is_empty()
-        && rule_chars + total_chars(&notes) > bot.memory_char_budget as usize
-    {
+    while !notes.is_empty() && rule_chars + total_chars(&notes) > bot.memory_char_budget as usize {
         notes.remove(0);
     }
 

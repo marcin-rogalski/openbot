@@ -27,13 +27,22 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: content.into() }
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+        }
     }
 }
 
@@ -127,7 +136,9 @@ pub async fn chat(
         temperature: 0.7,
         stream: true,
         max_tokens: Some(MAX_REPLY_TOKENS),
-        stream_options: Some(StreamOptions { include_usage: true }),
+        stream_options: Some(StreamOptions {
+            include_usage: true,
+        }),
         frequency_penalty: Some(0.3),
     };
 
@@ -140,7 +151,10 @@ pub async fn chat(
     }
 
     let started = Instant::now();
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
@@ -171,7 +185,12 @@ pub async fn chat(
             let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) else {
                 continue;
             };
-            if let Some(delta) = chunk.choices.into_iter().next().and_then(|c| c.delta.content) {
+            if let Some(delta) = chunk
+                .choices
+                .into_iter()
+                .next()
+                .and_then(|c| c.delta.content)
+            {
                 if !delta.is_empty() {
                     full.push_str(&delta);
                     on_progress(&full);
@@ -240,7 +259,11 @@ pub async fn summarize_conversation(
     previous: &str,
     new_messages: &str,
 ) -> Result<String, String> {
-    let prev = if previous.trim().is_empty() { "(none yet)" } else { previous };
+    let prev = if previous.trim().is_empty() {
+        "(none yet)"
+    } else {
+        previous
+    };
     let messages = vec![
         ChatMessage::system(
             "You maintain a running summary of a Discord conversation so an assistant can recall \
@@ -291,6 +314,92 @@ pub async fn should_archive(
     }
 }
 
+// --- Transcription ----------------------------------------------------------
+
+/// Cap the transcript text fed to the summariser so a long recording can't
+/// overflow the model's context.
+const MAX_SUMMARY_INPUT_CHARS: usize = 12_000;
+
+#[derive(Deserialize)]
+struct TranscriptionResponse {
+    #[serde(default)]
+    text: String,
+}
+
+/// Transcribe an audio clip via the OpenAI-compatible `/audio/transcriptions`
+/// endpoint on the bot's model server (Whisper-style). Returns the transcript.
+pub async fn transcribe(
+    cfg: &BotConfig,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+) -> Result<String, String> {
+    let url = format!(
+        "{}/audio/transcriptions",
+        cfg.model.base_url.trim_end_matches('/')
+    );
+    let mime = if mime.trim().is_empty() {
+        "application/octet-stream"
+    } else {
+        mime.split(';').next().unwrap_or(mime).trim()
+    };
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename.to_string())
+        .mime_str(mime)
+        .map_err(|e| format!("bad audio mime: {e}"))?;
+    let form = reqwest::multipart::Form::new()
+        .text("model", cfg.model.transcription_model.clone())
+        .part("file", part);
+
+    let mut req = reqwest::Client::new()
+        .post(url)
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .multipart(form);
+    if !cfg.model.api_key.trim().is_empty() {
+        req = req.bearer_auth(cfg.model.api_key.trim());
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "transcription server returned {status}: {}",
+            detail.trim()
+        ));
+    }
+
+    let parsed: TranscriptionResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
+    let text = parsed.text.trim().to_string();
+    if text.is_empty() {
+        return Err("empty transcription".to_string());
+    }
+    Ok(text)
+}
+
+/// Summarise a transcript into concise Markdown (overview + key points + action
+/// items), for a companion `.summary.md` file.
+pub async fn summarize_transcript(cfg: &BotConfig, transcript: &str) -> Result<String, String> {
+    let input: String = transcript.chars().take(MAX_SUMMARY_INPUT_CHARS).collect();
+    let messages = vec![
+        ChatMessage::system(
+            "You summarise a transcript (of a voice note, call, or meeting) into concise Markdown. \
+             Produce a one-paragraph overview, then a '## Key points' section as bullets, then an \
+             '## Action items' section as bullets (write 'None' if there are none). Capture \
+             decisions, names, dates, numbers, and follow-ups. Output only Markdown, no preamble.",
+        ),
+        ChatMessage::user(format!("Transcript:\n{input}\n\nMarkdown summary:")),
+    ];
+    let (text, _) = request(cfg, messages, Some(800), 0.3).await?;
+    Ok(text.trim().to_string())
+}
+
 // --- Embeddings -------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -318,7 +427,10 @@ pub async fn embed(cfg: &BotConfig, inputs: &[String]) -> Result<Vec<Vec<f32>>, 
         return Ok(Vec::new());
     }
     let url = format!("{}/embeddings", cfg.model.base_url.trim_end_matches('/'));
-    let body = EmbeddingRequest { model: &cfg.model.embedding_model, input: inputs };
+    let body = EmbeddingRequest {
+        model: &cfg.model.embedding_model,
+        input: inputs,
+    };
 
     let mut req = reqwest::Client::new()
         .post(url)
@@ -328,14 +440,23 @@ pub async fn embed(cfg: &BotConfig, inputs: &[String]) -> Result<Vec<Vec<f32>>, 
         req = req.bearer_auth(cfg.model.api_key.trim());
     }
 
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
-        return Err(format!("embeddings server returned {status}: {}", detail.trim()));
+        return Err(format!(
+            "embeddings server returned {status}: {}",
+            detail.trim()
+        ));
     }
 
-    let parsed: EmbeddingResponse = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let parsed: EmbeddingResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     if parsed.data.len() != inputs.len() {
         return Err(format!(
             "embeddings count mismatch: got {}, expected {}",
@@ -359,8 +480,16 @@ pub async fn pick_folder(
     if folders.is_empty() {
         return None;
     }
-    let list = folders.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n");
-    let rules = if guidance.trim().is_empty() { "(none)".to_string() } else { guidance.to_string() };
+    let list = folders
+        .iter()
+        .map(|f| format!("- {f}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rules = if guidance.trim().is_empty() {
+        "(none)".to_string()
+    } else {
+        guidance.to_string()
+    };
     let messages = vec![
         ChatMessage::system(
             "You file an attachment into the best-matching folder. Reply with EXACTLY one folder \
@@ -374,7 +503,10 @@ pub async fn pick_folder(
     match request(cfg, messages, Some(20), 0.0).await {
         Ok((text, _)) => {
             let answer = text.trim().trim_matches('"').trim();
-            folders.iter().find(|f| f.eq_ignore_ascii_case(answer)).cloned()
+            folders
+                .iter()
+                .find(|f| f.eq_ignore_ascii_case(answer))
+                .cloned()
         }
         Err(_) => None,
     }
@@ -398,7 +530,10 @@ pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
         .next()?
         .ok()?;
     let tool = value.get("tool")?.as_str()?.to_string();
-    let args = value.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let args = value
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
     Some(ToolCall { tool, args })
 }
 
@@ -428,14 +563,20 @@ async fn request(
     }
 
     let started = Instant::now();
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
         return Err(format!("model server returned {status}: {}", detail.trim()));
     }
 
-    let parsed: ChatResponse = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let parsed: ChatResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     let elapsed = started.elapsed().as_secs_f64();
 
     let content = parsed
@@ -469,14 +610,22 @@ fn looks_repetitive(s: &str) -> bool {
 
 fn derive_metrics(usage: Option<&Usage>, elapsed_secs: f64) -> Metrics {
     let Some(usage) = usage else {
-        return Metrics { prefill_tps: None, inference_tps: None };
+        return Metrics {
+            prefill_tps: None,
+            inference_tps: None,
+        };
     };
     let prefill_tps = usage.prompt_tps;
-    let inference_tps = usage.generation_tps.or(usage.completion_tps).or_else(|| {
-        match usage.completion_tokens {
-            Some(tokens) if elapsed_secs > 0.0 => Some(tokens as f64 / elapsed_secs),
-            _ => None,
-        }
-    });
-    Metrics { prefill_tps, inference_tps }
+    let inference_tps =
+        usage
+            .generation_tps
+            .or(usage.completion_tps)
+            .or_else(|| match usage.completion_tokens {
+                Some(tokens) if elapsed_secs > 0.0 => Some(tokens as f64 / elapsed_secs),
+                _ => None,
+            });
+    Metrics {
+        prefill_tps,
+        inference_tps,
+    }
 }

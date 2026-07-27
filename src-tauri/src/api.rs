@@ -25,7 +25,9 @@ pub fn start(app: AppHandle) {
                 let (status, body) = route(&app, request.method(), request.url());
                 let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
                     .expect("valid header");
-                let response = Response::from_string(body).with_status_code(status).with_header(header);
+                let response = Response::from_string(body)
+                    .with_status_code(status)
+                    .with_header(header);
                 let _ = request.respond(response);
             }
         }
@@ -35,7 +37,11 @@ pub fn start(app: AppHandle) {
 
 fn route(app: &AppHandle, method: &Method, url: &str) -> (u16, String) {
     let path = url.split('?').next().unwrap_or(url);
-    let parts: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
 
     match (method, parts.as_slice()) {
         (Method::Get, ["bots"]) => (200, list(app)),
@@ -62,7 +68,10 @@ fn list(app: &AppHandle) -> String {
 
 fn toggle(app: &AppHandle, id: &str, action: &str) -> (u16, String) {
     let Some(bot) = config::load_bot(app, id) else {
-        return (404, json!({ "error": format!("no bot with id {id}") }).to_string());
+        return (
+            404,
+            json!({ "error": format!("no bot with id {id}") }).to_string(),
+        );
     };
     let running = bot::running_ids(app).contains(&bot.id);
 
@@ -86,5 +95,8 @@ fn toggle(app: &AppHandle, id: &str, action: &str) -> (u16, String) {
         bot::stop(app, &bot.id);
     }
 
-    (200, json!({ "ok": true, "id": bot.id, "name": bot.name, "running": start }).to_string())
+    (
+        200,
+        json!({ "ok": true, "id": bot.id, "name": bot.name, "running": start }).to_string(),
+    )
 }

@@ -79,7 +79,10 @@ fn encode(v: &[f32]) -> Vec<u8> {
 }
 
 fn decode(bytes: &[u8]) -> Vec<f32> {
-    bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
 }
 
 /// Replace any existing source with the same `drive_id`, then insert its chunks.
@@ -95,8 +98,10 @@ pub async fn upsert_source(
         let tx = conn.transaction().map_err(sqlerr)?;
 
         if let Some(old_id) = source_id(&tx, &meta.drive_id)? {
-            tx.execute("DELETE FROM chunks WHERE source_id = ?1", [old_id]).map_err(sqlerr)?;
-            tx.execute("DELETE FROM sources WHERE id = ?1", [old_id]).map_err(sqlerr)?;
+            tx.execute("DELETE FROM chunks WHERE source_id = ?1", [old_id])
+                .map_err(sqlerr)?;
+            tx.execute("DELETE FROM sources WHERE id = ?1", [old_id])
+                .map_err(sqlerr)?;
         }
 
         let now = now_ms();
@@ -123,7 +128,11 @@ pub async fn upsert_source(
     .map_err(|e| format!("db task failed: {e}"))?
 }
 
-pub async fn has_source(app: &AppHandle, instance_id: &str, drive_id: &str) -> Result<bool, String> {
+pub async fn has_source(
+    app: &AppHandle,
+    instance_id: &str,
+    drive_id: &str,
+) -> Result<bool, String> {
     let path = db_path(app, instance_id)?;
     let drive_id = drive_id.to_string();
     tokio::task::spawn_blocking(move || -> Result<bool, String> {
@@ -174,8 +183,9 @@ pub async fn search(
 
         // Vector candidates: brute-force cosine over all chunk embeddings.
         let mut cosine: Vec<(i64, f32)> = {
-            let mut stmt =
-                conn.prepare("SELECT id, embedding FROM chunks").map_err(sqlerr)?;
+            let mut stmt = conn
+                .prepare("SELECT id, embedding FROM chunks")
+                .map_err(sqlerr)?;
             let rows = stmt
                 .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
                 .map_err(sqlerr)?;
@@ -203,7 +213,9 @@ pub async fn search(
                     )
                     .map_err(sqlerr)?;
                 let rows = stmt
-                    .query_map(rusqlite::params![match_expr, CANDIDATES as i64], |r| r.get(0))
+                    .query_map(rusqlite::params![match_expr, CANDIDATES as i64], |r| {
+                        r.get(0)
+                    })
                     .map_err(sqlerr)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(sqlerr)?
             }
@@ -233,10 +245,18 @@ pub async fn search(
             .map_err(sqlerr)?;
         for (id, _score) in ranked {
             let row = stmt.query_row([id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
             });
             if let Ok((name, drive_id, text)) = row {
-                hits.push(Hit { name, drive_id, text });
+                hits.push(Hit {
+                    name,
+                    drive_id,
+                    text,
+                });
             }
         }
         Ok(hits)
@@ -246,12 +266,16 @@ pub async fn search(
 }
 
 fn source_id(conn: &Connection, drive_id: &str) -> Result<Option<i64>, String> {
-    conn.query_row("SELECT id FROM sources WHERE drive_id = ?1", [drive_id], |r| r.get(0))
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(sqlerr(other)),
-        })
+    conn.query_row(
+        "SELECT id FROM sources WHERE drive_id = ?1",
+        [drive_id],
+        |r| r.get(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(sqlerr(other)),
+    })
 }
 
 fn norm(v: &[f32]) -> f32 {
@@ -261,7 +285,11 @@ fn norm(v: &[f32]) -> f32 {
 fn cosine_sim(q: &[f32], v: &[f32], qnorm: f32) -> f32 {
     let dot: f32 = q.iter().zip(v).map(|(a, b)| a * b).sum();
     let vnorm = norm(v);
-    if vnorm == 0.0 { 0.0 } else { dot / (qnorm * vnorm) }
+    if vnorm == 0.0 {
+        0.0
+    } else {
+        dot / (qnorm * vnorm)
+    }
 }
 
 /// Build a safe FTS5 MATCH expression: quote each term, OR them. `None` if the

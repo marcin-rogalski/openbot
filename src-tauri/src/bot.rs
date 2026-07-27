@@ -26,6 +26,8 @@ pub const ACTIVITY_EVENT: &str = "bot://activity";
 /// Live token stream for an in-progress model call: `{ botId, id, content }` —
 /// the UI replaces the matching activity entry's content as it grows.
 pub const STREAM_EVENT: &str = "bot://stream";
+/// Whether a bot is actively working on a reply: `{ botId, thinking }`.
+pub const THINKING_EVENT: &str = "bot://thinking";
 /// Throughput numbers for the status bar (carries `botId`).
 pub const METRICS_EVENT: &str = "bot://metrics";
 /// Tool-approval request: `{ id, botId, tool, args }`.
@@ -165,7 +167,13 @@ pub fn start(app: &AppHandle, bot_id: &str) {
         .unwrap()
         .bots
         .insert(bot_id.to_string(), BotRuntime::default());
-    let _ = app.emit(STATUS_EVENT, StatusEvent { bot_id, running: true });
+    let _ = app.emit(
+        STATUS_EVENT,
+        StatusEvent {
+            bot_id,
+            running: true,
+        },
+    );
 
     let app_for_task = app.clone();
     let id = bot_id.to_string();
@@ -181,11 +189,23 @@ pub fn start(app: &AppHandle, bot_id: &str) {
 }
 
 pub fn stop(app: &AppHandle, bot_id: &str) {
-    let runtime = app.state::<BotManager>().inner.lock().unwrap().bots.remove(bot_id);
+    let runtime = app
+        .state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .bots
+        .remove(bot_id);
     let Some(runtime) = runtime else {
         return; // wasn't running
     };
-    let _ = app.emit(STATUS_EVENT, StatusEvent { bot_id, running: false });
+    let _ = app.emit(
+        STATUS_EVENT,
+        StatusEvent {
+            bot_id,
+            running: false,
+        },
+    );
     tauri::async_runtime::spawn(async move {
         if let Some(shard_manager) = runtime.shard_manager {
             shard_manager.shutdown_all().await;
@@ -244,7 +264,18 @@ pub fn stream_start(app: &AppHandle, bot_id: &str) -> String {
 
 /// Push the latest accumulated content for a streaming model call to the UI.
 pub fn stream_update(app: &AppHandle, bot_id: &str, id: &str, content: &str) {
-    let _ = app.emit(STREAM_EVENT, json!({ "botId": bot_id, "id": id, "content": content }));
+    let _ = app.emit(
+        STREAM_EVENT,
+        json!({ "botId": bot_id, "id": id, "content": content }),
+    );
+}
+
+/// Mark a bot as actively working (or done), for the status bar.
+pub fn emit_thinking(app: &AppHandle, bot_id: &str, thinking: bool) {
+    let _ = app.emit(
+        THINKING_EVENT,
+        json!({ "botId": bot_id, "thinking": thinking }),
+    );
 }
 
 /// A tool-call activity carrying both the raw detail (`content`, shown in
@@ -304,7 +335,12 @@ pub fn policy_for(bot: &BotConfig, policy_key: &str, is_write: bool) -> Policy {
 pub async fn request_approval(app: &AppHandle, bot_id: &str, tool: &str, args: &Value) -> Decision {
     let id = format!("ap-{}", SEQ.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
-    app.state::<BotManager>().inner.lock().unwrap().approvals.insert(id.clone(), tx);
+    app.state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .approvals
+        .insert(id.clone(), tx);
     let _ = app.emit(
         TOOL_APPROVAL_EVENT,
         json!({ "id": id, "botId": bot_id, "tool": tool, "args": args }),
@@ -314,7 +350,12 @@ pub async fn request_approval(app: &AppHandle, bot_id: &str, tool: &str, args: &
     {
         Ok(Ok(decision)) => decision,
         _ => {
-            app.state::<BotManager>().inner.lock().unwrap().approvals.remove(&id);
+            app.state::<BotManager>()
+                .inner
+                .lock()
+                .unwrap()
+                .approvals
+                .remove(&id);
             Decision::Deny
         }
     };
@@ -337,10 +378,22 @@ pub fn stop_bot(app: AppHandle, bot_id: String) {
 /// Restart a bot to apply saved settings — only if it's currently running.
 #[tauri::command]
 pub async fn restart_bot(app: AppHandle, bot_id: String) {
-    let runtime = app.state::<BotManager>().inner.lock().unwrap().bots.remove(&bot_id);
+    let runtime = app
+        .state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .bots
+        .remove(&bot_id);
     let was_running = runtime.is_some();
     if let Some(runtime) = runtime {
-        let _ = app.emit(STATUS_EVENT, StatusEvent { bot_id: &bot_id, running: false });
+        let _ = app.emit(
+            STATUS_EVENT,
+            StatusEvent {
+                bot_id: &bot_id,
+                running: false,
+            },
+        );
         if let Some(shard_manager) = runtime.shard_manager {
             shard_manager.shutdown_all().await;
         } else if let Some(task) = runtime.task {
@@ -359,7 +412,14 @@ pub fn get_running_bots(manager: State<'_, BotManager>) -> Vec<String> {
 
 /// Ids of currently-running bots, for the control API.
 pub fn running_ids(app: &AppHandle) -> Vec<String> {
-    app.state::<BotManager>().inner.lock().unwrap().bots.keys().cloned().collect()
+    app.state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .bots
+        .keys()
+        .cloned()
+        .collect()
 }
 
 #[tauri::command]
@@ -370,7 +430,14 @@ pub fn resolve_tool_approval(app: AppHandle, id: String, decision: String) {
         "always_deny" => Decision::AlwaysDeny,
         _ => Decision::Deny,
     };
-    if let Some(tx) = app.state::<BotManager>().inner.lock().unwrap().approvals.remove(&id) {
+    if let Some(tx) = app
+        .state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .approvals
+        .remove(&id)
+    {
         let _ = tx.send(decision);
     }
     let _ = app.emit(TOOL_APPROVAL_RESOLVED_EVENT, json!({ "id": id }));

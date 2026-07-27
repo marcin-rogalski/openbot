@@ -94,6 +94,9 @@ pub struct ModelConfig {
     /// Embedding model served by the same `base_url` (`/embeddings`), used for the
     /// local knowledge index.
     pub embedding_model: String,
+    /// Transcription model served by the same `base_url` (`/audio/transcriptions`),
+    /// used to turn audio attachments into text.
+    pub transcription_model: String,
 }
 
 impl Default for ModelConfig {
@@ -103,6 +106,7 @@ impl Default for ModelConfig {
             model_name: String::new(),
             api_key: String::new(),
             embedding_model: "nomic-embed-text".into(),
+            transcription_model: "whisper-1".into(),
         }
     }
 }
@@ -133,6 +137,10 @@ pub struct BotConfig {
     /// are forwarded to subscribed tools (e.g. Drive archiving). Off = no live
     /// attachment gate (and no per-attachment model calls).
     pub attachments_enabled: bool,
+    /// When enabled, audio attachments in conversations the bot takes part in are
+    /// transcribed; the bot posts a transcript + summary (and indexes them into
+    /// the knowledge base when a Drive tool is enabled).
+    pub transcription_enabled: bool,
 }
 
 impl Default for BotConfig {
@@ -154,6 +162,7 @@ impl Default for BotConfig {
             memory_max_notes: 40,
             memory_char_budget: 2000,
             attachments_enabled: true,
+            transcription_enabled: true,
         }
     }
 }
@@ -168,7 +177,10 @@ impl BotConfig {
 
     /// OpenAI-compatible chat completions endpoint.
     pub fn chat_url(&self) -> String {
-        format!("{}/chat/completions", self.model.base_url.trim_end_matches('/'))
+        format!(
+            "{}/chat/completions",
+            self.model.base_url.trim_end_matches('/')
+        )
     }
 }
 
@@ -226,7 +238,13 @@ fn migrate_if_needed<R: Runtime>(app: &AppHandle<R>) {
 
 /// Build a global config + one bot from the old flat `config` shape.
 fn migrate_legacy(legacy: &serde_json::Value) -> (GlobalConfig, Vec<BotConfig>) {
-    let s = |key: &str| legacy.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let s = |key: &str| {
+        legacy
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let u = |key: &str, default: u64| legacy.get(key).and_then(|v| v.as_u64()).unwrap_or(default);
 
     let mut global = GlobalConfig::default();
@@ -255,7 +273,11 @@ fn migrate_legacy(legacy: &serde_json::Value) -> (GlobalConfig, Vec<BotConfig>) 
         model: ModelConfig {
             base_url: {
                 let base = s("modelBaseUrl");
-                if base.is_empty() { ModelConfig::default().base_url } else { base }
+                if base.is_empty() {
+                    ModelConfig::default().base_url
+                } else {
+                    base
+                }
             },
             model_name: s("modelName"),
             api_key: s("apiKey"),
@@ -263,7 +285,11 @@ fn migrate_legacy(legacy: &serde_json::Value) -> (GlobalConfig, Vec<BotConfig>) 
         },
         system_prompt: {
             let p = s("systemPrompt");
-            if p.is_empty() { BotConfig::default().system_prompt } else { p }
+            if p.is_empty() {
+                BotConfig::default().system_prompt
+            } else {
+                p
+            }
         },
         followup_window_messages: u("followupWindowMessages", 5) as u32,
         followup_window_secs: u("followupWindowSecs", 180),
@@ -307,5 +333,8 @@ pub fn new_id(prefix: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{prefix}-{nanos}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{prefix}-{nanos}-{}",
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }

@@ -123,11 +123,15 @@ impl DriveOp {
     fn args(self) -> &'static str {
         match self {
             DriveOp::Search => "{\"query\": string}",
-            DriveOp::Ask => "{\"question\": string, \"k\": number (optional, passages to retrieve)}",
+            DriveOp::Ask => {
+                "{\"question\": string, \"k\": number (optional, passages to retrieve)}"
+            }
             DriveOp::ListSources | DriveOp::Reindex => "{}",
             DriveOp::List => "{}",
             DriveOp::Read | DriveOp::Delete => "{\"id\": string}",
-            DriveOp::Create => "{\"name\": string, \"content\": string, \"parent\": string (optional folder id)}",
+            DriveOp::Create => {
+                "{\"name\": string, \"content\": string, \"parent\": string (optional folder id)}"
+            }
             DriveOp::CreateFolder => "{\"name\": string, \"parent\": string (optional folder id)}",
             DriveOp::Update => "{\"id\": string, \"content\": string}",
             DriveOp::Backfill => "{\"limit\": number (optional, recent messages to scan)}",
@@ -191,8 +195,10 @@ impl MemoryOp {
 
     fn description(self) -> &'static str {
         match self {
-            MemoryOp::Save => "Remember a fact ('note') or a standing instruction ('rule') for \
-                               future conversations.",
+            MemoryOp::Save => {
+                "Remember a fact ('note') or a standing instruction ('rule') for \
+                               future conversations."
+            }
             MemoryOp::Delete => "Forget a memory by its id.",
         }
     }
@@ -216,8 +222,13 @@ enum ToolKind {
         client_secret: String,
         folder_id: String,
     },
-    Web { op: WebOp, api_key: String },
-    Memory { op: MemoryOp },
+    Web {
+        op: WebOp,
+        api_key: String,
+    },
+    Memory {
+        op: MemoryOp,
+    },
 }
 
 /// One callable tool for a specific bot.
@@ -261,22 +272,32 @@ impl ResolvedTool {
     /// True for the Drive `backfill_attachments` op, which `discord.rs` handles
     /// specially (it needs Discord channel history).
     pub fn is_backfill(&self) -> bool {
-        matches!(&self.kind, ToolKind::Drive { op: DriveOp::Backfill, .. })
+        matches!(
+            &self.kind,
+            ToolKind::Drive {
+                op: DriveOp::Backfill,
+                ..
+            }
+        )
     }
 
     /// The attachment sink for a Drive tool, so backfill can archive to this
     /// instance's folder.
     pub fn drive_sink(&self) -> Option<AttachmentSink> {
         match &self.kind {
-            ToolKind::Drive { instance_name, client_id, client_secret, folder_id, .. } => {
-                Some(AttachmentSink::Drive {
-                    instance_id: self.instance_id.clone(),
-                    instance_name: instance_name.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    folder_id: folder_id.clone(),
-                })
-            }
+            ToolKind::Drive {
+                instance_name,
+                client_id,
+                client_secret,
+                folder_id,
+                ..
+            } => Some(AttachmentSink::Drive {
+                instance_id: self.instance_id.clone(),
+                instance_name: instance_name.clone(),
+                client_id: client_id.clone(),
+                client_secret: client_secret.clone(),
+                folder_id: folder_id.clone(),
+            }),
             _ => None,
         }
     }
@@ -288,9 +309,11 @@ impl ResolvedTool {
         let failed = result.starts_with("error:");
         match &self.kind {
             ToolKind::Drive { op, .. } => match op {
-                DriveOp::Search => {
-                    quoted("🔎 Searched Google Drive", str_arg("query"), count_prefix(result, "- id="))
-                }
+                DriveOp::Search => quoted(
+                    "🔎 Searched Google Drive",
+                    str_arg("query"),
+                    count_prefix(result, "- id="),
+                ),
                 DriveOp::Ask => quoted(
                     "📚 Consulted the knowledge base",
                     str_arg("question"),
@@ -299,7 +322,10 @@ impl ResolvedTool {
                 DriveOp::ListSources => "📇 Listed knowledge sources".into(),
                 DriveOp::Reindex => "🔄 Rebuilt the knowledge index".into(),
                 DriveOp::List => {
-                    format!("📁 Listed {} file(s) in Google Drive", count_prefix(result, "- id="))
+                    format!(
+                        "📁 Listed {} file(s) in Google Drive",
+                        count_prefix(result, "- id=")
+                    )
                 }
                 DriveOp::Read => "📄 Read a file from Google Drive".into(),
                 DriveOp::Create => "📝 Created a file in Google Drive".into(),
@@ -309,14 +335,20 @@ impl ResolvedTool {
                 DriveOp::Backfill => "📎 Backfilled attachments from recent messages".into(),
             },
             ToolKind::Web { op, .. } => match op {
-                WebOp::Search => {
-                    quoted("🌐 Searched the web", str_arg("query"), count_prefix(result, "- "))
-                }
+                WebOp::Search => quoted(
+                    "🌐 Searched the web",
+                    str_arg("query"),
+                    count_prefix(result, "- "),
+                ),
                 WebOp::Fetch => format!("🌐 Read {}", domain_of(str_arg("url"))),
             },
             ToolKind::Memory { op } => match op {
                 MemoryOp::Save => {
-                    let kind = if str_arg("kind") == "rule" { "rule" } else { "note" };
+                    let kind = if str_arg("kind") == "rule" {
+                        "rule"
+                    } else {
+                        "note"
+                    };
                     format!("🧠 Remembered a {kind}")
                 }
                 MemoryOp::Delete => "🧠 Forgot a memory".into(),
@@ -331,13 +363,17 @@ impl ResolvedTool {
     /// non-web tools.
     pub fn source_urls(&self, args: &Value, result: &str) -> Vec<String> {
         match &self.kind {
-            ToolKind::Web { op: WebOp::Fetch, .. } => args
+            ToolKind::Web {
+                op: WebOp::Fetch, ..
+            } => args
                 .get("url")
                 .and_then(Value::as_str)
                 .filter(|u| u.starts_with("http"))
                 .map(|u| vec![u.to_string()])
                 .unwrap_or_default(),
-            ToolKind::Web { op: WebOp::Search, .. } => result
+            ToolKind::Web {
+                op: WebOp::Search, ..
+            } => result
                 .lines()
                 .map(str::trim)
                 .filter(|l| l.starts_with("http"))
@@ -383,7 +419,10 @@ pub fn catalog(global: &GlobalConfig, bot: &BotConfig) -> Vec<ResolvedTool> {
                         call_name: format!("{slug}_{}", op.suffix()),
                         instance_id: instance.id.clone(),
                         description: op.description().to_string(),
-                        kind: ToolKind::Web { op, api_key: instance.api_key.clone() },
+                        kind: ToolKind::Web {
+                            op,
+                            api_key: instance.api_key.clone(),
+                        },
                     });
                 }
             }
@@ -431,10 +470,21 @@ pub fn prompt_section(catalog: &[ResolvedTool]) -> String {
 
 /// Run a resolved tool call; returns a result string (ok or `error: …`).
 pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &Value) -> String {
-    let arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let arg = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
 
     match &tool.kind {
-        ToolKind::Drive { op, client_id, client_secret, folder_id, .. } => {
+        ToolKind::Drive {
+            op,
+            client_id,
+            client_secret,
+            folder_id,
+            ..
+        } => {
             let (cid, secret, folder) = (client_id, client_secret, folder_id);
             match op {
                 DriveOp::Search => {
@@ -448,13 +498,18 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                         return "error: bot config not found".to_string();
                     };
                     let question = arg("question");
-                    let k = args.get("k").and_then(Value::as_u64).unwrap_or(6).clamp(1, 12) as usize;
+                    let k = args
+                        .get("k")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(6)
+                        .clamp(1, 12) as usize;
                     let emb = match model::embed(&bot, std::slice::from_ref(&question)).await {
                         Ok(mut v) if !v.is_empty() => v.remove(0),
                         Ok(_) => return "error: no embedding returned".to_string(),
                         Err(e) => return format!("error: embeddings failed: {e}"),
                     };
-                    match knowledge::search(app, &tool.instance_id, emb, question.clone(), k).await {
+                    match knowledge::search(app, &tool.instance_id, emb, question.clone(), k).await
+                    {
                         Ok(hits) if hits.is_empty() => {
                             "the knowledge index is empty — run reindex first, then ask again"
                                 .to_string()
@@ -463,7 +518,8 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                         Err(e) => format!("error: {e}"),
                     }
                 }
-                DriveOp::ListSources => match knowledge::list_sources(app, &tool.instance_id).await {
+                DriveOp::ListSources => match knowledge::list_sources(app, &tool.instance_id).await
+                {
                     Ok(list) if list.is_empty() => "the knowledge index is empty".to_string(),
                     Ok(list) => list
                         .iter()
@@ -516,9 +572,7 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                 },
                 // Backfill needs Discord history, so it's intercepted in
                 // discord.rs `run_tool` before reaching here.
-                DriveOp::Backfill => {
-                    "error: backfill must run with channel context".to_string()
-                }
+                DriveOp::Backfill => "error: backfill must run with channel context".to_string(),
             }
         }
         ToolKind::Web { op, api_key } => match op {
@@ -637,15 +691,24 @@ pub async fn deliver_attachment(
                 let extract_bytes = bytes.clone();
                 let filename = att.filename.clone();
                 let mime = att.content_type.clone();
-                tokio::task::spawn_blocking(move || ingest::extract_text(&extract_bytes, &filename, &mime))
-                    .await
-                    .ok()
-                    .flatten()
+                tokio::task::spawn_blocking(move || {
+                    ingest::extract_text(&extract_bytes, &filename, &mime)
+                })
+                .await
+                .ok()
+                .flatten()
             };
 
             // Semantic foldering: pick a subfolder (rule-guided), else the root.
             let target = choose_folder(
-                app, bot, &guidance, context, client_id, client_secret, folder_id, &att.filename,
+                app,
+                bot,
+                &guidance,
+                context,
+                client_id,
+                client_secret,
+                folder_id,
+                &att.filename,
             )
             .await;
 
@@ -698,8 +761,72 @@ pub async fn deliver_attachment(
     }
 }
 
+/// Store a bot-generated text file (e.g. a transcript or its summary) into a
+/// Drive sink's folder and index it into the knowledge base. Returns the new
+/// Drive file id. Best-effort; logs and returns `None` on failure.
+pub async fn store_text_artifact(
+    app: &AppHandle,
+    bot: &BotConfig,
+    sink: &AttachmentSink,
+    filename: &str,
+    content: &str,
+    context: &str,
+) -> Option<String> {
+    let AttachmentSink::Drive {
+        instance_id,
+        instance_name,
+        client_id,
+        client_secret,
+        folder_id,
+    } = sink;
+
+    let guidance = if bot.memory_enabled {
+        memory::guidance(&memory::load(app, &bot.id))
+    } else {
+        String::new()
+    };
+    let target = choose_folder(
+        app,
+        bot,
+        &guidance,
+        context,
+        client_id,
+        client_secret,
+        folder_id,
+        filename,
+    )
+    .await;
+
+    let drive_id =
+        match gdrive::create(app, client_id, client_secret, &target, filename, content).await {
+            Ok(id) => id,
+            Err(e) => {
+                bot::emit_log(app, &bot.id, format!("store \"{filename}\": failed: {e}"));
+                return None;
+            }
+        };
+    bot::emit_tool_activity(
+        app,
+        &bot.id,
+        format!("store_artifact {{name={filename:?}, to={instance_name:?}}} → id={drive_id}"),
+        format!("💾 Saved \"{filename}\" to {instance_name}"),
+    );
+    index_text(
+        app,
+        bot,
+        instance_id,
+        &drive_id,
+        filename,
+        "text/markdown",
+        content,
+    )
+    .await;
+    Some(drive_id)
+}
+
 /// Pick the best subfolder for a file (rule-guided model classification), or the
 /// root when there are no subfolders / no clear match.
+#[allow(clippy::too_many_arguments)]
 async fn choose_folder(
     app: &AppHandle,
     bot: &BotConfig,
@@ -710,7 +837,9 @@ async fn choose_folder(
     root: &str,
     filename: &str,
 ) -> String {
-    let subfolders = gdrive::list_folders(app, client_id, client_secret, root).await.unwrap_or_default();
+    let subfolders = gdrive::list_folders(app, client_id, client_secret, root)
+        .await
+        .unwrap_or_default();
     if subfolders.is_empty() {
         return root.to_string();
     }
@@ -742,7 +871,11 @@ async fn index_text(
     let embeddings = match model::embed(bot, &chunks).await {
         Ok(embeddings) => embeddings,
         Err(e) => {
-            bot::emit_log(app, &bot.id, format!("index: embed failed for \"{name}\": {e}"));
+            bot::emit_log(
+                app,
+                &bot.id,
+                format!("index: embed failed for \"{name}\": {e}"),
+            );
             return;
         }
     };
@@ -754,7 +887,11 @@ async fn index_text(
         embed_model: bot.model.embedding_model.clone(),
     };
     match knowledge::upsert_source(app, instance_id, meta, paired).await {
-        Ok(()) => bot::emit_log(app, &bot.id, format!("indexed \"{name}\" into the knowledge base")),
+        Ok(()) => bot::emit_log(
+            app,
+            &bot.id,
+            format!("indexed \"{name}\" into the knowledge base"),
+        ),
         Err(e) => bot::emit_log(app, &bot.id, format!("index failed for \"{name}\": {e}")),
     }
 }
@@ -768,14 +905,21 @@ async fn download(url: &str) -> Result<Vec<u8>, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("read failed: {e}"))
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read failed: {e}"))
 }
 
 // --- Helpers ----------------------------------------------------------------
 
 /// The model-supplied `parent` folder id, or the tool's root folder when absent.
 fn parent_or(arg: &str, root: &str) -> String {
-    if arg.trim().is_empty() { root.to_string() } else { arg.trim().to_string() }
+    if arg.trim().is_empty() {
+        root.to_string()
+    } else {
+        arg.trim().to_string()
+    }
 }
 
 /// Format retrieved knowledge chunks as cited passages for the model to
@@ -786,7 +930,12 @@ fn format_hits(question: &str, hits: &[knowledge::Hit]) -> String {
          cite files by name.\n\n"
     );
     for h in hits {
-        out.push_str(&format!("### {} (drive_id={})\n{}\n\n", h.name, h.drive_id, h.text.trim()));
+        out.push_str(&format!(
+            "### {} (drive_id={})\n{}\n\n",
+            h.name,
+            h.drive_id,
+            h.text.trim()
+        ));
     }
     out.trim().to_string()
 }
@@ -813,7 +962,10 @@ async fn reindex(
         if f.mime_type == "application/vnd.google-apps.folder" {
             continue;
         }
-        if knowledge::has_source(app, instance_id, &f.id).await.unwrap_or(false) {
+        if knowledge::has_source(app, instance_id, &f.id)
+            .await
+            .unwrap_or(false)
+        {
             skipped += 1;
             continue;
         }
@@ -864,7 +1016,11 @@ async fn index_drive_file(
 fn unique_slug(name: &str, fallback: &str, used: &mut HashSet<String>) -> String {
     let base = {
         let s = slugify(name);
-        if s.is_empty() { fallback.to_string() } else { s }
+        if s.is_empty() {
+            fallback.to_string()
+        } else {
+            s
+        }
     };
     let mut slug = base.clone();
     let mut n = 2;

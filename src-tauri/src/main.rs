@@ -1,8 +1,6 @@
 // Prevents an additional console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(target_os = "macos")]
-mod macos;
 mod api;
 mod bot;
 mod config;
@@ -10,6 +8,8 @@ mod discord;
 mod gdrive;
 mod ingest;
 mod knowledge;
+#[cfg(target_os = "macos")]
+mod macos;
 mod memory;
 mod model;
 mod tools;

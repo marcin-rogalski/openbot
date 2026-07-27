@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serenity::all::{
-    Attachment, ChannelId, Client, Context, EventHandler, GatewayIntents, GetMessages, Message,
-    Ready, User, UserId,
+    Attachment, ChannelId, Client, Context, CreateAttachment, CreateMessage, EditMessage,
+    EventHandler, GatewayIntents, GetMessages, Message, Ready, User, UserId,
 };
 use serenity::async_trait;
 use tauri::{AppHandle, Manager};
@@ -38,6 +38,10 @@ const MAX_ATTACHMENTS: usize = 10;
 /// files are left to the archiving gate.
 const MAX_ATTACHMENT_BYTES: u32 = 10_000_000;
 const MAX_ATTACHMENT_CHARS: usize = 8000;
+/// Cap audio considered for transcription (matches typical Whisper upload limits).
+const MAX_AUDIO_BYTES: u32 = 25_000_000;
+/// Cap the transcript text fed back into the reply's inline context.
+const MAX_TRANSCRIPT_CONTEXT_CHARS: usize = 8000;
 
 /// An open follow-up window for a channel.
 struct ActiveConvo {
@@ -96,7 +100,7 @@ impl Handler {
         let to_fold: Vec<&Message> = history
             .iter()
             .skip(RAW_WINDOW)
-            .filter(|m| through.map_or(true, |t| m.id.get() > t))
+            .filter(|m| through.is_none_or(|t| m.id.get() > t))
             .collect();
         if to_fold.len() < COMPACT_EVERY {
             return previous;
@@ -124,7 +128,10 @@ impl Handler {
         bot::emit_log(
             &self.app,
             &self.bot_id,
-            format!("compacted {} older message(s) into the running summary", to_fold.len()),
+            format!(
+                "compacted {} older message(s) into the running summary",
+                to_fold.len()
+            ),
         );
         summary
     }
@@ -134,8 +141,7 @@ impl Handler {
         let Some(convo) = windows.get_mut(&msg.channel_id) else {
             return false;
         };
-        let expired = convo.started.elapsed()
-            > Duration::from_secs(self.bot.followup_window_secs)
+        let expired = convo.started.elapsed() > Duration::from_secs(self.bot.followup_window_secs)
             || convo.count >= self.bot.followup_window_messages;
         if expired {
             windows.remove(&msg.channel_id);
@@ -146,10 +152,13 @@ impl Handler {
     }
 
     fn refresh_window(&self, msg: &Message) {
-        self.windows
-            .lock()
-            .unwrap()
-            .insert(msg.channel_id, ActiveConvo { count: 0, started: Instant::now() });
+        self.windows.lock().unwrap().insert(
+            msg.channel_id,
+            ActiveConvo {
+                count: 0,
+                started: Instant::now(),
+            },
+        );
     }
 
     async fn reply(
@@ -159,6 +168,7 @@ impl Handler {
         history: &[Message],
         bot_id: UserId,
         bot_name: &str,
+        audio_texts: &[(String, String)],
     ) {
         let channel = channel_label(ctx, msg).await;
         bot::emit_activity(
@@ -170,9 +180,15 @@ impl Handler {
             humanize(&msg.content, &msg.mentions, bot_id, bot_name),
         );
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+        bot::emit_thinking(&self.app, &self.bot_id, true);
+        // Live progress message in the channel — edited as the bot works and
+        // finally rewritten into the answer.
+        let mut status = msg.channel_id.say(&ctx.http, "💭 Thinking…").await.ok();
 
-        // Read text-ish attachments inline so the model can act on them this turn.
-        let attachments = self.attachment_texts(msg).await;
+        // Read text-ish attachments inline so the model can act on them this turn,
+        // plus any transcripts of audio attachments already produced this message.
+        let mut attachments = self.attachment_texts(msg).await;
+        attachments.extend(audio_texts.iter().cloned());
         // Fold older messages into a running summary so long threads fit.
         let summary = self.compact(msg.channel_id, history).await;
         let mut messages =
@@ -181,7 +197,10 @@ impl Handler {
         let mut error: Option<String> = None;
         let mut sources: Vec<String> = Vec::new();
 
-        for _ in 0..MAX_TOOL_ITERS {
+        for iter in 0..MAX_TOOL_ITERS {
+            if iter > 0 {
+                set_status(ctx, &mut status, "💭 Thinking…").await;
+            }
             // Live "thinking" entry the UI fills in as tokens stream, so a loop
             // is visible.
             let stream_id = bot::stream_start(&self.app, &self.bot_id);
@@ -214,7 +233,9 @@ impl Handler {
                     break;
                 }
                 Some(call) => {
-                    let result = self.run_tool(&ctx, msg.channel_id, &call, &mut sources).await;
+                    let result = self
+                        .run_tool(ctx, msg.channel_id, &call, &mut sources, &mut status)
+                        .await;
                     messages.push(ChatMessage::assistant(text));
                     messages.push(ChatMessage::user(format!(
                         "TOOL_RESULT: {result}\n(If more steps are needed, output the next \
@@ -228,7 +249,10 @@ impl Handler {
         let reply = if let Some(e) = error {
             format!("Sorry — I hit an error while working on that: {e}")
         } else {
-            let cleaned = final_text.as_deref().map(sanitize_reply).unwrap_or_default();
+            let cleaned = final_text
+                .as_deref()
+                .map(sanitize_reply)
+                .unwrap_or_default();
             if cleaned.is_empty() {
                 "I ran the tools but didn't produce a final answer.".to_string()
             } else {
@@ -243,12 +267,29 @@ impl Handler {
             channel,
             reply.clone(),
         );
-        for chunk in split_message(&reply, DISCORD_MAX) {
+        let mut chunks = split_message(&reply, DISCORD_MAX).into_iter();
+        // Rewrite the status message into the first chunk; send the rest.
+        if let Some(first) = chunks.next() {
+            match status.as_mut() {
+                Some(m) => {
+                    let _ = m.edit(&ctx.http, EditMessage::new().content(first)).await;
+                }
+                None => {
+                    let _ = msg.channel_id.say(&ctx.http, first).await;
+                }
+            }
+        }
+        for chunk in chunks {
             if let Err(e) = msg.channel_id.say(&ctx.http, chunk).await {
-                bot::emit_log(&self.app, &self.bot_id, format!("Failed to send reply: {e}"));
+                bot::emit_log(
+                    &self.app,
+                    &self.bot_id,
+                    format!("Failed to send reply: {e}"),
+                );
                 break;
             }
         }
+        bot::emit_thinking(&self.app, &self.bot_id, false);
         self.refresh_window(msg);
     }
 
@@ -258,6 +299,7 @@ impl Handler {
         channel_id: ChannelId,
         call: &model::ToolCall,
         sources: &mut Vec<String>,
+        status: &mut Option<Message>,
     ) -> String {
         let name = call.tool.as_str();
 
@@ -275,19 +317,20 @@ impl Handler {
                 bot::emit_log(&self.app, &self.bot_id, format!("{name}: denied by policy"));
                 return "denied by policy".to_string();
             }
-            Policy::Ask => match bot::request_approval(&self.app, &self.bot_id, name, &call.args).await
-            {
-                Decision::Approve => true,
-                Decision::Deny => false,
-                Decision::AlwaysAllow => {
-                    config::set_tool_policy(&self.app, &self.bot_id, &policy_key, "allow");
-                    true
+            Policy::Ask => {
+                match bot::request_approval(&self.app, &self.bot_id, name, &call.args).await {
+                    Decision::Approve => true,
+                    Decision::Deny => false,
+                    Decision::AlwaysAllow => {
+                        config::set_tool_policy(&self.app, &self.bot_id, &policy_key, "allow");
+                        true
+                    }
+                    Decision::AlwaysDeny => {
+                        config::set_tool_policy(&self.app, &self.bot_id, &policy_key, "deny");
+                        false
+                    }
                 }
-                Decision::AlwaysDeny => {
-                    config::set_tool_policy(&self.app, &self.bot_id, &policy_key, "deny");
-                    false
-                }
-            },
+            }
         };
         if !allowed {
             bot::emit_log(&self.app, &self.bot_id, format!("{name}: denied"));
@@ -304,11 +347,13 @@ impl Handler {
                 sources.push(url);
             }
         }
+        let summary = tool.summary(&call.args, &result);
+        set_status(ctx, status, &summary).await;
         bot::emit_tool_activity(
             &self.app,
             &self.bot_id,
             format!("{name} {} → {}", call.args, first_line(&result)),
-            tool.summary(&call.args, &result),
+            summary,
         );
         result
     }
@@ -346,21 +391,194 @@ impl Handler {
             .ok()
             .flatten();
             if let Some(text) = text {
-                out.push((a.filename.clone(), truncate(text.trim(), MAX_ATTACHMENT_CHARS)));
+                out.push((
+                    a.filename.clone(),
+                    truncate(text.trim(), MAX_ATTACHMENT_CHARS),
+                ));
             }
         }
         out
     }
 
-    /// Forward each attachment on a message to every subscribed sink.
+    /// Forward each attachment on a message to every subscribed sink. Audio is
+    /// skipped here — the transcription path owns it.
     async fn dispatch_attachments(&self, msg: &Message) {
         let context = format!("{}: {}", msg.author.name, msg.content);
         for attachment in msg.attachments.iter().take(MAX_ATTACHMENTS) {
+            let mime = attachment.content_type.clone().unwrap_or_default();
+            if self.bot.transcription_enabled
+                && crate::ingest::is_audio(&attachment.filename, &mime)
+            {
+                continue;
+            }
             let att = attachment_ref(attachment);
             for sink in &self.sinks {
                 tools::deliver_attachment(&self.app, &self.bot, sink, &att, &context).await;
             }
         }
+    }
+
+    /// Transcribe audio attachments on a message: post a transcript + summary
+    /// `.md` back to the channel, index them into the knowledge base when a Drive
+    /// tool is enabled, and return each transcript so the reply can use it inline.
+    async fn handle_audio(&self, ctx: &Context, msg: &Message) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let clips: Vec<&Attachment> = msg
+            .attachments
+            .iter()
+            .take(MAX_ATTACHMENTS)
+            .filter(|a| {
+                crate::ingest::is_audio(&a.filename, &a.content_type.clone().unwrap_or_default())
+            })
+            .collect();
+        if clips.is_empty() {
+            return out;
+        }
+
+        bot::emit_thinking(&self.app, &self.bot_id, true);
+        let drive_sink = self
+            .sinks
+            .iter()
+            .find(|s| matches!(s, AttachmentSink::Drive { .. }));
+
+        for a in clips {
+            if a.size > MAX_AUDIO_BYTES {
+                let _ = msg
+                    .channel_id
+                    .say(
+                        &ctx.http,
+                        format!(
+                            "🎙️ \"{}\" is too large to transcribe (over 25 MB).",
+                            a.filename
+                        ),
+                    )
+                    .await;
+                continue;
+            }
+            let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+            bot::emit_log(
+                &self.app,
+                &self.bot_id,
+                format!("transcribing \"{}\"…", a.filename),
+            );
+
+            let bytes = match download_bytes(&a.url).await {
+                Ok(b) => b,
+                Err(e) => {
+                    bot::emit_log(
+                        &self.app,
+                        &self.bot_id,
+                        format!("audio \"{}\": download failed: {e}", a.filename),
+                    );
+                    continue;
+                }
+            };
+            let mime = a.content_type.clone().unwrap_or_default();
+            let transcript = match model::transcribe(&self.bot, bytes, &a.filename, &mime).await {
+                Ok(t) => t,
+                Err(e) => {
+                    bot::emit_log(
+                        &self.app,
+                        &self.bot_id,
+                        format!("audio \"{}\": transcription failed: {e}", a.filename),
+                    );
+                    let _ = msg
+                        .channel_id
+                        .say(
+                            &ctx.http,
+                            format!("🎙️ Couldn't transcribe \"{}\": {e}", a.filename),
+                        )
+                        .await;
+                    continue;
+                }
+            };
+            let summary = model::summarize_transcript(&self.bot, &transcript)
+                .await
+                .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
+
+            let stem = a
+                .filename
+                .rsplit_once('.')
+                .map(|(s, _)| s)
+                .unwrap_or(&a.filename);
+            let when = msg.timestamp.to_string();
+            let transcript_md = format!(
+                "# Transcript — {name}\n\n- Source: Discord, posted by {author}\n- Transcribed: \
+                 {when}\n\n---\n\n{transcript}\n",
+                name = a.filename,
+                author = msg.author.name,
+            );
+            let summary_md = format!(
+                "# Summary — {name}\n\n- Source: Discord, posted by {author}\n- Transcribed: \
+                 {when}\n\n{summary}\n",
+                name = a.filename,
+                author = msg.author.name,
+            );
+            let transcript_file = format!("{stem}.transcript.md");
+            let summary_file = format!("{stem}.summary.md");
+
+            // Post both files back to the channel.
+            let builder = CreateMessage::new()
+                .content(format!(
+                    "🎙️ Transcribed **{}** — transcript + summary attached.",
+                    a.filename
+                ))
+                .files(vec![
+                    CreateAttachment::bytes(transcript_md.clone().into_bytes(), &transcript_file),
+                    CreateAttachment::bytes(summary_md.clone().into_bytes(), &summary_file),
+                ]);
+            if let Err(e) = msg.channel_id.send_message(&ctx.http, builder).await {
+                bot::emit_log(
+                    &self.app,
+                    &self.bot_id,
+                    format!("audio \"{}\": send failed: {e}", a.filename),
+                );
+            }
+            bot::emit_tool_activity(
+                &self.app,
+                &self.bot_id,
+                format!(
+                    "transcribe {{name={:?}}} → {} chars",
+                    a.filename,
+                    transcript.chars().count()
+                ),
+                format!("🎙️ Transcribed \"{}\"", a.filename),
+            );
+
+            // Index into the knowledge base when a Drive tool is enabled.
+            if let Some(sink) = drive_sink {
+                let context = format!(
+                    "audio transcript from Discord, posted by {}",
+                    msg.author.name
+                );
+                tools::store_text_artifact(
+                    &self.app,
+                    &self.bot,
+                    sink,
+                    &transcript_file,
+                    &transcript_md,
+                    &context,
+                )
+                .await;
+                tools::store_text_artifact(
+                    &self.app,
+                    &self.bot,
+                    sink,
+                    &summary_file,
+                    &summary_md,
+                    &context,
+                )
+                .await;
+            }
+
+            out.push((
+                transcript_file,
+                truncate(transcript.trim(), MAX_TRANSCRIPT_CONTEXT_CHARS),
+            ));
+        }
+
+        bot::emit_thinking(&self.app, &self.bot_id, false);
+        out
     }
 
     /// On-demand backfill: sweep recent channel history and run found
@@ -455,7 +673,10 @@ impl Handler {
         for (name, text) in attachments {
             trigger.push_str(&format!("\n\n[Attached file \"{name}\":\n{text}\n]"));
         }
-        messages.push(ChatMessage::user(format!("{}: {}", msg.author.name, trigger)));
+        messages.push(ChatMessage::user(format!(
+            "{}: {}",
+            msg.author.name, trigger
+        )));
         messages
     }
 }
@@ -491,15 +712,24 @@ impl EventHandler for Handler {
             return;
         }
 
-        // Forward any attachments to subscribed tools (independent of whether we
-        // reply), so files in an active conversation are still considered.
+        // Transcribe audio attachments (post transcript + summary, index them);
+        // returns transcripts so the reply can use them inline this turn.
+        let audio_texts = if self.bot.transcription_enabled && !msg.attachments.is_empty() {
+            self.handle_audio(&ctx, &msg).await
+        } else {
+            Vec::new()
+        };
+        // Forward remaining (non-audio) attachments to subscribed tools.
         if self.bot.attachments_enabled && !self.sinks.is_empty() && !msg.attachments.is_empty() {
             self.dispatch_attachments(&msg).await;
         }
 
         let history = msg
             .channel_id
-            .messages(&ctx.http, GetMessages::new().before(msg.id).limit(HISTORY_LIMIT))
+            .messages(
+                &ctx.http,
+                GetMessages::new().before(msg.id).limit(HISTORY_LIMIT),
+            )
             .await
             .unwrap_or_default();
 
@@ -512,14 +742,29 @@ impl EventHandler for Handler {
             bot::emit_log(
                 &self.app,
                 &self.bot_id,
-                format!("follow-up: {}", if engage { "yes — replying" } else { "no — ignoring" }),
+                format!(
+                    "follow-up: {}",
+                    if engage {
+                        "yes — replying"
+                    } else {
+                        "no — ignoring"
+                    }
+                ),
             );
             if !engage {
                 return;
             }
         }
 
-        self.reply(&ctx, &msg, &history, bot_user_id, &bot_user_name).await;
+        self.reply(
+            &ctx,
+            &msg,
+            &history,
+            bot_user_id,
+            &bot_user_name,
+            &audio_texts,
+        )
+        .await;
     }
 }
 
@@ -533,7 +778,10 @@ pub async fn run(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalC
 
     let token = bot.discord_token.clone();
     let handler = Handler::new(app.clone(), bot_id.clone(), bot, global);
-    let mut client = match Client::builder(&token, intents).event_handler(handler).await {
+    let mut client = match Client::builder(&token, intents)
+        .event_handler(handler)
+        .await
+    {
         Ok(client) => client,
         Err(e) => {
             bot::emit_log(&app, &bot_id, format!("Discord connection failed: {e}"));
@@ -542,7 +790,8 @@ pub async fn run(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalC
         }
     };
 
-    app.state::<BotManager>().set_shard_manager(&bot_id, client.shard_manager.clone());
+    app.state::<BotManager>()
+        .set_shard_manager(&bot_id, client.shard_manager.clone());
 
     if let Err(e) = client.start().await {
         bot::emit_log(&app, &bot_id, format!("Discord gateway error: {e}"));
@@ -555,7 +804,11 @@ pub async fn run(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalC
 fn humanize(content: &str, mentions: &[User], bot_id: UserId, bot_name: &str) -> String {
     let mut out = content.to_string();
     for user in mentions {
-        let name = if user.id == bot_id { bot_name } else { user.name.as_str() };
+        let name = if user.id == bot_id {
+            bot_name
+        } else {
+            user.name.as_str()
+        };
         out = out.replace(&format!("<@{}>", user.id), &format!("@{name}"));
         out = out.replace(&format!("<@!{}>", user.id), &format!("@{name}"));
     }
@@ -577,7 +830,11 @@ fn render_context(history: &[Message], bot_id: UserId) -> String {
         .iter()
         .rev()
         .map(|m| {
-            let who = if m.author.id == bot_id { "assistant" } else { m.author.name.as_str() };
+            let who = if m.author.id == bot_id {
+                "assistant"
+            } else {
+                m.author.name.as_str()
+            };
             format!("{who}: {}", m.content)
         })
         .collect::<Vec<_>>()
@@ -595,6 +852,18 @@ fn truncate(text: &str, max_chars: usize) -> String {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("").trim()
+}
+
+/// Edit the live progress message in the channel (no-op if it wasn't posted).
+async fn set_status(ctx: &Context, status: &mut Option<Message>, text: &str) {
+    if let Some(m) = status.as_mut() {
+        let _ = m
+            .edit(
+                &ctx.http,
+                EditMessage::new().content(truncate(text, DISCORD_MAX)),
+            )
+            .await;
+    }
 }
 
 /// Split a reply into Discord-sized messages, breaking on paragraph/line/word
@@ -656,7 +925,10 @@ async fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| format!("read failed: {e}"))
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read failed: {e}"))
 }
 
 /// Prepend a compact "Sources" header (deduped, capped) when web tools were

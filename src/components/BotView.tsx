@@ -42,6 +42,7 @@ export function BotView({
   global,
   events,
   running,
+  thinking,
   metrics,
   verbose,
   onVerboseChange,
@@ -52,6 +53,7 @@ export function BotView({
   global: GlobalConfig
   events: ActivityEvent[]
   running: boolean
+  thinking: boolean
   metrics?: MetricsData
   verbose: boolean
   onVerboseChange: (verbose: boolean) => void
@@ -174,9 +176,15 @@ export function BotView({
                       value={cfg.model.embeddingModel}
                       onChange={(e) => setModel({ embeddingModel: e.target.value })}
                     />
+                    <FloatingField
+                      label="Transcription model"
+                      value={cfg.model.transcriptionModel}
+                      onChange={(e) => setModel({ transcriptionModel: e.target.value })}
+                    />
                     <Text fontSize="xs" color="fg.muted">
-                      Embeddings use the same base URL (/embeddings), for the Drive
-                      knowledge index.
+                      Embeddings (/embeddings) power the Drive knowledge index;
+                      transcription (/audio/transcriptions) turns audio into text. Both
+                      use the same base URL.
                     </Text>
                   </Section>
                 </>
@@ -236,6 +244,29 @@ export function BotView({
                       Text files you attach are read inline so the bot can act on them
                       this turn; files are also offered to enabled tools (e.g. Google
                       Drive archives relevant ones, guided by memory rules).
+                    </Text>
+                  </Section>
+                  <Section
+                    title="Audio transcription"
+                    action={
+                      <Switch.Root
+                        size="sm"
+                        checked={cfg.transcriptionEnabled}
+                        colorPalette="brand"
+                        onCheckedChange={(e) => update("transcriptionEnabled", e.checked)}
+                      >
+                        <Switch.HiddenInput />
+                        <Switch.Control>
+                          <Switch.Thumb />
+                        </Switch.Control>
+                      </Switch.Root>
+                    }
+                  >
+                    <Text fontSize="sm" color="fg.muted">
+                      Audio you post is transcribed (via the transcription model); the bot
+                      replies with a transcript and a summary <code>.md</code>, and — when
+                      a Google Drive tool is enabled — saves and indexes them into the
+                      knowledge base.
                     </Text>
                   </Section>
                 </>
@@ -415,7 +446,7 @@ export function BotView({
       </Flex>
 
       {tab === "chat" ? (
-        <StatusBar running={running} metrics={metrics} />
+        <StatusBar running={running} thinking={thinking} metrics={metrics} />
       ) : (
         <ActionBar
           dirty={dirty}

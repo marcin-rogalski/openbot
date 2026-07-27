@@ -52,9 +52,7 @@ fn application_secret(client_id: &str, client_secret: &str) -> ApplicationSecret
         redirect_uris: vec!["http://127.0.0.1".to_string()],
         project_id: None,
         client_email: None,
-        auth_provider_x509_cert_url: Some(
-            "https://www.googleapis.com/oauth2/v1/certs".to_string(),
-        ),
+        auth_provider_x509_cert_url: Some("https://www.googleapis.com/oauth2/v1/certs".to_string()),
         client_x509_cert_url: None,
     }
 }
@@ -83,13 +81,12 @@ pub async fn access_token<R: Runtime>(
     client_secret: &str,
 ) -> Result<String, String> {
     let secret = application_secret(client_id, client_secret);
-    let auth =
-        InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
-            .persist_tokens_to_disk(token_cache_path(app, client_id))
-            .flow_delegate(Box::new(BrowserDelegate))
-            .build()
-            .await
-            .map_err(|e| format!("failed to build authenticator: {e}"))?;
+    let auth = InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
+        .persist_tokens_to_disk(token_cache_path(app, client_id))
+        .flow_delegate(Box::new(BrowserDelegate))
+        .build()
+        .await
+        .map_err(|e| format!("failed to build authenticator: {e}"))?;
 
     let token = auth
         .token(&[DRIVE_SCOPE])

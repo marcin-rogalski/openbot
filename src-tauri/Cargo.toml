@@ -28,6 +28,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
     "stream",
+    "multipart",
 ] }
 # Stream combinators for parsing the model server's SSE token stream.
 futures-util = "0.3"

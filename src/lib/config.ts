@@ -73,6 +73,7 @@ export type ModelConfig = {
   modelName: string
   apiKey: string
   embeddingModel: string
+  transcriptionModel: string
 }
 
 export type BotConfig = {
@@ -90,6 +91,7 @@ export type BotConfig = {
   memoryMaxNotes: number
   memoryCharBudget: number
   attachmentsEnabled: boolean
+  transcriptionEnabled: boolean
 }
 
 export const BOT_COLORS = [
@@ -118,6 +120,7 @@ export function newBot(index: number): BotConfig {
       modelName: "",
       apiKey: "",
       embeddingModel: "nomic-embed-text",
+      transcriptionModel: "whisper-1",
     },
     systemPrompt:
       "You are a helpful assistant in a Discord server. Keep replies concise.",
@@ -129,6 +132,7 @@ export function newBot(index: number): BotConfig {
     memoryMaxNotes: 40,
     memoryCharBudget: 2000,
     attachmentsEnabled: true,
+    transcriptionEnabled: true,
   }
 }
 

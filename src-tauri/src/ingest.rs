@@ -3,7 +3,10 @@
 
 /// Extract plain text from raw bytes, or `None` if the type isn't supported yet.
 pub fn extract_text(bytes: &[u8], filename: &str, mime: &str) -> Option<String> {
-    let ext = filename.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
+    let ext = filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default();
 
     if mime == "application/pdf" || ext == "pdf" {
         return pdf_extract::extract_text_from_mem(bytes)
@@ -19,6 +22,24 @@ pub fn extract_text(bytes: &[u8], filename: &str, mime: &str) -> Option<String> 
     }
 
     None
+}
+
+/// True if a file looks like audio (by MIME or extension) — a candidate for
+/// transcription rather than text extraction.
+pub fn is_audio(filename: &str, mime: &str) -> bool {
+    let mime = mime.split(';').next().unwrap_or(mime).trim();
+    if mime.starts_with("audio/") {
+        return true;
+    }
+    let ext = filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default();
+    const AUDIO_EXTS: &[&str] = &[
+        "mp3", "m4a", "m4b", "wav", "wave", "ogg", "oga", "opus", "webm", "flac", "aac", "aiff",
+        "aif", "wma", "amr",
+    ];
+    AUDIO_EXTS.contains(&ext.as_str())
 }
 
 fn is_text(mime: &str, ext: &str) -> bool {
@@ -53,7 +74,11 @@ pub fn chunk(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= CHUNK_CHARS {
         let t = text.trim();
-        return if t.is_empty() { Vec::new() } else { vec![t.to_string()] };
+        return if t.is_empty() {
+            Vec::new()
+        } else {
+            vec![t.to_string()]
+        };
     }
 
     let mut chunks = Vec::new();

@@ -57,7 +57,10 @@ pub async fn search(api_key: &str, query: &str) -> Result<String, String> {
         return Err(error_body(resp).await);
     }
 
-    let parsed: SearchResponse = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let parsed: SearchResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     if parsed.results.is_empty() {
         return Ok("no results".to_string());
     }
@@ -89,7 +92,10 @@ pub async fn fetch(api_key: &str, url: &str) -> Result<String, String> {
         return Err(error_body(resp).await);
     }
 
-    let parsed: FetchResponse = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
+    let parsed: FetchResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
     let body = truncate(parsed.content.trim(), MAX_FETCH_CHARS);
     match parsed.title {
         Some(title) if !title.trim().is_empty() => Ok(format!("# {}\n{body}", title.trim())),
