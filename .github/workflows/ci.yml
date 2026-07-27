@@ -4,36 +4,56 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   frontend:
+    name: Frontend (typecheck · lint · test · storybook)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: "npm"
+          cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run lint
+      - run: npx biome check .
       - run: npm run test
-      - run: npm run build
+      - run: npm run build-storybook
 
-  rust-check:
-    runs-on: macos-latest
+  rust:
+    name: Rust (fmt · clippy · check)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: "npm"
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            libxdo-dev \
+            libssl-dev
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
-      - run: npm ci
-      - run: npm run build
-      - name: cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+          workspaces: src-tauri
+      - name: rustfmt
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+      - name: clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: check
+        working-directory: src-tauri
+        run: cargo check --all-targets

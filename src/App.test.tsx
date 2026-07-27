@@ -35,7 +35,8 @@ describe("App", () => {
       </Provider>,
     )
     expect(screen.getByText("Bots")).toBeInTheDocument()
-    expect(screen.getByText("General settings")).toBeInTheDocument()
+    // Settings is now an icon-only button in the titlebar (labelled for a11y).
+    expect(screen.getByLabelText("General settings")).toBeInTheDocument()
     expect(await screen.findByText(/No bots yet/)).toBeInTheDocument()
   })
 })

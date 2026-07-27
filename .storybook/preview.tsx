@@ -23,7 +23,6 @@ const preview: Preview = {
   decorators: [
     (Story, context) => {
       const theme = context.globals.theme ?? "dark"
-      // biome-ignore lint/correctness/useHookAtTopLevel: decorator body is a component
       useEffect(() => {
         const root = document.documentElement
         root.classList.remove("light", "dark")

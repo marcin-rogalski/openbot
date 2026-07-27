@@ -1,88 +1,68 @@
 # openbot
 
-Minimal Tauri v2 + React + TypeScript boilerplate: menu bar tray icon, a
-hide-to-tray window, and full tooling (lint, typecheck, test, CI, release).
-Deliberately almost no app code — that's for you to add. This just makes sure
-the plumbing and tooling are solid.
+**Local-LLM-powered Discord bots on your desktop.** openbot is a macOS/Windows/Linux
+app that runs one or more Discord bots backed by a model server *you* control — so
+your conversations, files, and API keys stay on your machine. Each bot can search
+and build a knowledge base from your Google Drive, search the web, and remember
+facts and rules you give it, with per-tool approval so nothing happens behind your back.
 
-## What's already wired up
+> Built with [Tauri](https://tauri.app) (Rust) + React + TypeScript.
 
-- **Tray icon** (`src-tauri/src/tray.rs`): left-click toggles the window,
-  menu has Show / Hide / Quit. Icon renders as a template image so it adapts
-  to light/dark menu bars on macOS.
-- **Window lifecycle** (`src-tauri/src/window.rs`): closing the window hides
-  it instead of quitting the app (standard tray-app behavior). Two commands
-  are exposed to the frontend: `show_main_window`, `hide_main_window`.
-- **Icons**: a full desktop icon set (`32x32.png` … `icon.icns`/`icon.ico`)
-  is already generated in `src-tauri/icons/` from a placeholder blue square.
-  Swap it out with your own before shipping — see "Replacing the icon" below.
-- **Tooling**: ESLint (flat config) + Prettier + strict TypeScript + Vitest +
-  React Testing Library, all verified to run clean out of the box.
-- **CI** (`.github/workflows/ci.yml`): typecheck/lint/test/build on every
-  push, plus a `cargo check` on macOS runners.
-- **Release** (`.github/workflows/release.yml`): push a `v*` tag to build a
-  universal macOS binary and attach it to a draft GitHub Release via
-  `tauri-action`. Code-signing/notarization env vars are stubbed in but
-  commented out — uncomment once you have an Apple Developer account.
+![CI](https://github.com/marcin-rogalski/openbot/actions/workflows/ci.yml/badge.svg)
 
-## Prerequisites (macOS)
+## Features
 
-You need the Rust toolchain and Tauri's system deps, which npm alone can't
-install:
+- **Multi-bot** — run several independently-configured bots from one window, each with
+  its own token, model, system prompt, and tools.
+- **Bring your own model** — points at any OpenAI-compatible server (llama.cpp, LM
+  Studio, Ollama's OpenAI endpoint, vLLM…) for both chat and embeddings.
+- **Google Drive knowledge base** — a NotebookLM-style RAG: Drive is cold storage;
+  parsing, embedding, and the search index live locally. Ask questions across your
+  files and get grounded, cited answers.
+- **Web search** — via [Keenable](https://keenable.ai).
+- **Memory & rules** — the bot saves facts and follows guidance you give it, injected
+  into its prompt.
+- **Per-tool approval** — every tool operation is `allow` / `ask` / `deny`; writes
+  default to *ask*, reads to *allow*.
+- **Live status in Discord** — a single message shows the bot's progress
+  (💭 Thinking… → 🔎 Searched… → the answer) and resolves into the final reply.
+- **Local & private** — runs from the menu-bar/tray; your data never leaves your machine
+  except the calls *you* configure (your model server, Google, Keenable, Discord).
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-xcode-select --install   # if not already installed
+## Quick start
+
+```sh
+# 1. Install (macOS, via the tap — see docs/releasing.md to set it up)
+brew tap marcin-rogalski/openbot
+brew install --cask openbot
+
+# 2. Start a local OpenAI-compatible model server that serves chat + /embeddings
+#    (default the app expects: http://127.0.0.1:8080/v1)
+
+# 3. Launch openbot, add a bot, paste its Discord token, point it at your model,
+#    enable the tools you want, and invite it to your server.
 ```
 
-## Scripts
+Prefer to build from source, or not on macOS? See **[docs/getting-started.md](docs/getting-started.md)**.
 
-| Command               | What it does                                                         |
-| --------------------- | -------------------------------------------------------------------- |
-| `npm start`           | Alias for `tauri:dev` — runs the real desktop app                    |
-| `npm run dev`         | Vite dev server only (browser, no native shell)                      |
-| `npm run tauri:dev`   | Full Tauri dev mode: native window + tray + hot reload               |
-| `npm run build`       | Typecheck + production frontend bundle (`dist/`)                     |
-| `npm run tauri:build` | Full native app bundle (`.app` / `.dmg`) for your Mac                |
-| `npm run publish`     | Same as `tauri:build` — kept as a separate name for CI/muscle memory |
-| `npm run test`        | Run Vitest once                                                      |
-| `npm run test:watch`  | Vitest in watch mode                                                 |
-| `npm run lint`        | ESLint                                                               |
-| `npm run typecheck`   | `tsc --noEmit`                                                       |
-| `npm run format`      | Prettier, write mode                                                 |
-| `npm run ci`          | typecheck + lint + test + build, in sequence (what CI runs)          |
+## How it works
 
-## Project layout
+The React UI configures bots and watches them work; a Rust backend runs each bot's
+Discord gateway connection, drives an OpenAI-compatible model in a ReAct tool loop,
+and executes tools (Google Drive, web, memory) under your approval policies. The
+knowledge base is a local SQLite index (FTS5 keyword + brute-force cosine over
+embeddings) built from files that live in Drive. See
+**[docs/architecture.md](docs/architecture.md)** for the full picture.
 
-```
-src/                   React app (currently just a placeholder)
-src-tauri/
-  src/
-    main.rs            Wires everything together, ~20 lines
-    tray.rs            Tray icon + menu
-    window.rs          Show/hide commands + the shared window label constant
-  tauri.conf.json       Window size, bundle targets, icon paths
-  icons/                Generated icon set
-.github/workflows/      ci.yml, release.yml
-```
+## Documentation
 
-## Replacing the icon
+- **[Getting started](docs/getting-started.md)** — prerequisites, install, first run
+- **[Configuration](docs/configuration.md)** — every setting explained
+- **[Tools](docs/tools.md)** — Google Drive knowledge base, web search, memory
+- **[Architecture](docs/architecture.md)** — how it's built, for contributors
+- **[Releasing](docs/releasing.md)** — tagging, multi-platform builds, Homebrew
+- **[Contributing](docs/contributing.md)** — dev setup and how to extend it
 
-```bash
-npx tauri icon path/to/your-1024x1024-source.png
-```
+## License
 
-This regenerates every size (`32x32.png` through `icon.icns`/`icon.ico`) in
-`src-tauri/icons/` in one shot — no macOS-only tooling required, it runs
-anywhere.
-
-## Where to plug in your Discord/MCP logic
-
-- Frontend UI → `src/App.tsx` and onward.
-- Anything that needs Rust-side system access (spawning your sidecar
-  process, reading local files, etc.) → new `#[tauri::command]` functions,
-  same pattern as `window.rs`. Register them in the `invoke_handler!` list in
-  `main.rs`.
-- If the Discord bot / MCP client runs as a separate Node process rather
-  than in Rust, `tauri-plugin-shell` (already a dependency) can spawn and
-  manage it as a sidecar binary.
+[MIT](LICENSE) © Marcin Rogalski
