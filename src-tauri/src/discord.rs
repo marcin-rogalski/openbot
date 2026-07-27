@@ -3,20 +3,25 @@
 //! the bot's id so the UI can scope streams.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serenity::all::{
     Attachment, ChannelId, Client, Context, CreateAttachment, CreateMessage, EditMessage,
-    EventHandler, GatewayIntents, GetMessages, Message, Ready, User, UserId,
+    EventHandler, GatewayIntents, GetMessages, GuildId, Message, Ready, ScheduledEvent,
+    ScheduledEventStatus, User, UserId,
 };
 use serenity::async_trait;
+use songbird::driver::DecodeMode;
+use songbird::{CoreEvent, Event, SerenityInit};
 use tauri::{AppHandle, Manager};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::bot::{self, ActivityKind, BotManager, Decision, Policy};
 use crate::config::{self, BotConfig, GlobalConfig};
 use crate::model::{self, ChatMessage};
 use crate::tools::{self, AttachmentRef, AttachmentSink, ResolvedTool};
+use crate::voice::{Meeting, Receiver};
 
 /// How many recent messages to fetch (covers the raw window plus a batch to
 /// compact once they scroll past it).
@@ -67,6 +72,8 @@ struct Handler {
     sinks: Vec<AttachmentSink>,
     windows: Mutex<HashMap<ChannelId, ActiveConvo>>,
     convos: Mutex<HashMap<ChannelId, ChannelMemory>>,
+    /// Active voice-channel transcriptions, keyed by guild.
+    meetings: AsyncMutex<HashMap<GuildId, Arc<Meeting>>>,
 }
 
 impl Handler {
@@ -81,6 +88,7 @@ impl Handler {
             sinks,
             windows: Mutex::new(HashMap::new()),
             convos: Mutex::new(HashMap::new()),
+            meetings: AsyncMutex::new(HashMap::new()),
         }
     }
 
@@ -619,6 +627,204 @@ impl Handler {
         format!("scanned {scanned} messages, archived {archived} file(s)")
     }
 
+    /// Route a join/leave voice command to the right action.
+    async fn handle_voice_command(&self, ctx: &Context, msg: &Message, cmd: VoiceCmd) {
+        let Some(guild_id) = msg.guild_id else {
+            let _ = msg
+                .channel_id
+                .say(&ctx.http, "Voice transcription only works in a server.")
+                .await;
+            return;
+        };
+        match cmd {
+            VoiceCmd::Join => {
+                // The channel the requester is currently in (from the voice-state cache).
+                let voice_channel = ctx.cache.guild(guild_id).and_then(|g| {
+                    g.voice_states
+                        .get(&msg.author.id)
+                        .and_then(|vs| vs.channel_id)
+                });
+                match voice_channel {
+                    Some(vc) => self.voice_join(ctx, guild_id, vc, msg.channel_id).await,
+                    None => {
+                        let _ = msg
+                            .channel_id
+                            .say(&ctx.http, "Join a voice channel first, then ask me again.")
+                            .await;
+                    }
+                }
+            }
+            VoiceCmd::Leave => self.voice_leave(ctx, guild_id, msg.channel_id).await,
+        }
+    }
+
+    /// Join a voice channel and start transcribing, announcing that we're doing
+    /// so (consent). No-op if already in a meeting for this guild.
+    async fn voice_join(
+        &self,
+        ctx: &Context,
+        guild_id: GuildId,
+        voice_channel: ChannelId,
+        text_channel: ChannelId,
+    ) {
+        let Some(manager) = songbird::get(ctx).await else {
+            let _ = text_channel
+                .say(&ctx.http, "Voice support isn't available right now.")
+                .await;
+            return;
+        };
+        if self.meetings.lock().await.contains_key(&guild_id) {
+            let _ = text_channel
+                .say(&ctx.http, "I'm already transcribing a call in this server.")
+                .await;
+            return;
+        }
+        match manager.join(guild_id, voice_channel).await {
+            Ok(call) => {
+                let meeting = Meeting::new(self.app.clone(), self.bot_id.clone(), self.bot.clone());
+                {
+                    let mut handler = call.lock().await;
+                    handler.add_global_event(
+                        Event::Core(CoreEvent::SpeakingStateUpdate),
+                        Receiver::new(meeting.clone()),
+                    );
+                    handler.add_global_event(
+                        Event::Core(CoreEvent::VoiceTick),
+                        Receiver::new(meeting.clone()),
+                    );
+                }
+                self.meetings.lock().await.insert(guild_id, meeting);
+                bot::emit_tool_activity(
+                    &self.app,
+                    &self.bot_id,
+                    format!("voice_join {{guild={guild_id}, channel={voice_channel}}}"),
+                    "🎙️ Joined a voice channel to transcribe".to_string(),
+                );
+                let _ = text_channel
+                    .say(
+                        &ctx.http,
+                        "🎙️ I've joined the voice channel and I'm transcribing this conversation. \
+                         I'll post a transcript and summary when I leave — just say “stop” or \
+                         “leave” to end.",
+                    )
+                    .await;
+            }
+            Err(e) => {
+                let _ = text_channel
+                    .say(&ctx.http, format!("Couldn't join the voice channel: {e}"))
+                    .await;
+            }
+        }
+    }
+
+    /// Leave the voice channel and produce the meeting transcript + summary.
+    async fn voice_leave(&self, ctx: &Context, guild_id: GuildId, text_channel: ChannelId) {
+        let meeting = self.meetings.lock().await.remove(&guild_id);
+        if let Some(manager) = songbird::get(ctx).await {
+            let _ = manager.remove(guild_id).await;
+        }
+        match meeting {
+            Some(meeting) => self.finalize_meeting(ctx, text_channel, meeting).await,
+            None => {
+                let _ = text_channel
+                    .say(&ctx.http, "I'm not transcribing a call here.")
+                    .await;
+            }
+        }
+    }
+
+    /// Assemble and deliver the transcript + summary for a finished meeting.
+    async fn finalize_meeting(
+        &self,
+        ctx: &Context,
+        text_channel: ChannelId,
+        meeting: Arc<Meeting>,
+    ) {
+        let _ = text_channel
+            .say(&ctx.http, "🎙️ Wrapping up — preparing the transcript…")
+            .await;
+        bot::emit_thinking(&self.app, &self.bot_id, true);
+
+        let Some(rendered) = meeting.render().await else {
+            bot::emit_thinking(&self.app, &self.bot_id, false);
+            let _ = text_channel
+                .say(&ctx.http, "I didn't capture any speech to transcribe.")
+                .await;
+            return;
+        };
+
+        // Resolve speaker ids to display names.
+        let mut names = HashMap::new();
+        for id in &rendered.user_ids {
+            let name = ctx
+                .http
+                .get_user(UserId::new(*id))
+                .await
+                .map(|u| u.name)
+                .unwrap_or_else(|_| "Unknown".to_string());
+            names.insert(*id, name);
+        }
+        let body = rendered.body(&names);
+
+        let transcript_md = format!(
+            "# Meeting transcript\n\n- Source: Discord voice channel\n- Duration: ~{} min\n\n\
+             ---\n\n{body}\n",
+            rendered.minutes,
+        );
+        let summary = model::summarize_transcript(&self.bot, &body)
+            .await
+            .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
+        let summary_md = format!("# Meeting summary\n\n{summary}\n");
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let transcript_file = format!("meeting-{stamp}.transcript.md");
+        let summary_file = format!("meeting-{stamp}.summary.md");
+
+        let builder = CreateMessage::new()
+            .content("🎙️ Meeting transcript + summary attached.")
+            .files(vec![
+                CreateAttachment::bytes(transcript_md.clone().into_bytes(), &transcript_file),
+                CreateAttachment::bytes(summary_md.clone().into_bytes(), &summary_file),
+            ]);
+        if let Err(e) = text_channel.send_message(&ctx.http, builder).await {
+            bot::emit_log(
+                &self.app,
+                &self.bot_id,
+                format!("meeting: send failed: {e}"),
+            );
+        }
+
+        if let Some(sink) = self
+            .sinks
+            .iter()
+            .find(|s| matches!(s, AttachmentSink::Drive { .. }))
+        {
+            let context = "meeting transcript from a Discord voice channel";
+            tools::store_text_artifact(
+                &self.app,
+                &self.bot,
+                sink,
+                &transcript_file,
+                &transcript_md,
+                context,
+            )
+            .await;
+            tools::store_text_artifact(
+                &self.app,
+                &self.bot,
+                sink,
+                &summary_file,
+                &summary_md,
+                context,
+            )
+            .await;
+        }
+        bot::emit_thinking(&self.app, &self.bot_id, false);
+    }
+
     fn build_messages(
         &self,
         history: &[Message],
@@ -712,6 +918,14 @@ impl EventHandler for Handler {
             return;
         }
 
+        // Voice-channel commands: join/leave to transcribe a live call.
+        if explicit {
+            if let Some(cmd) = voice_command(&msg.content) {
+                self.handle_voice_command(&ctx, &msg, cmd).await;
+                return;
+            }
+        }
+
         // Transcribe audio attachments (post transcript + summary, index them);
         // returns transcripts so the reply can use them inline this turn.
         let audio_texts = if self.bot.transcription_enabled && !msg.attachments.is_empty() {
@@ -766,6 +980,75 @@ impl EventHandler for Handler {
         )
         .await;
     }
+
+    /// A scheduled event went live — if it's tied to a voice channel, offer to
+    /// join and transcribe it (Phase 3). The user confirms with a "join" command.
+    async fn guild_scheduled_event_update(&self, ctx: Context, event: ScheduledEvent) {
+        if !self.bot.transcription_enabled {
+            return;
+        }
+        if !matches!(event.status, ScheduledEventStatus::Active) {
+            return;
+        }
+        let Some(voice_channel) = event.channel_id else {
+            return; // external event, no voice channel to join
+        };
+        let Some(text) = ctx
+            .cache
+            .guild(event.guild_id)
+            .and_then(|g| g.system_channel_id)
+        else {
+            return; // nowhere obvious to announce
+        };
+        let _ = text
+            .say(
+                &ctx.http,
+                format!(
+                    "📅 **{}** just started in <#{}>. Want me to join and transcribe it? \
+                     Mention me with “join the call”.",
+                    event.name, voice_channel
+                ),
+            )
+            .await;
+        bot::emit_log(
+            &self.app,
+            &self.bot_id,
+            format!("scheduled event active: {}", event.name),
+        );
+    }
+}
+
+/// A parsed voice command from an addressed message.
+enum VoiceCmd {
+    Join,
+    Leave,
+}
+
+/// Detect a join/leave voice-transcription command in an addressed message.
+/// Requires both an action word and a voice-context word, to avoid false hits.
+fn voice_command(content: &str) -> Option<VoiceCmd> {
+    let c = content.to_lowercase();
+    let has = |ws: &[&str]| ws.iter().any(|w| c.contains(w));
+    const CONTEXT: &[&str] = &[
+        "voice",
+        "call",
+        " vc",
+        "meeting",
+        "channel",
+        "transcri",
+        "recording",
+        "listening",
+    ];
+    if !has(CONTEXT) {
+        return None;
+    }
+    if has(&["leave", "stop", "hang up", "disconnect", "wrap up"]) {
+        return Some(VoiceCmd::Leave);
+    }
+    if has(&["join", "come in", "hop in", "sit in"]) {
+        return Some(VoiceCmd::Join);
+    }
+    None
 }
 
 /// Supervisor: build and run one bot's client until it stops, then mark it
@@ -778,8 +1061,11 @@ pub async fn run(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalC
 
     let token = bot.discord_token.clone();
     let handler = Handler::new(app.clone(), bot_id.clone(), bot, global);
+    // Decode received voice to PCM so we can transcribe it (voice.rs).
+    let songbird_config = songbird::Config::default().decode_mode(DecodeMode::Decode);
     let mut client = match Client::builder(&token, intents)
         .event_handler(handler)
+        .register_songbird_from_config(songbird_config)
         .await
     {
         Ok(client) => client,

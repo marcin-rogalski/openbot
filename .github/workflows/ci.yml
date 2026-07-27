@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # songbird's bundled libopus (audiopus_sys) ships a pre-3.5 CMakeLists that
+  # modern CMake rejects without this policy shim.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 jobs:
   frontend:
     name: Frontend (typecheck · lint · test · storybook)
@@ -41,7 +46,9 @@ jobs:
             patchelf \
             build-essential \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            cmake \
+            libopus-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

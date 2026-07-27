@@ -33,6 +33,7 @@ configures bots and watches them work. They communicate over Tauri commands and 
 | `ingest.rs` | Text extraction (text + PDF) and chunking. |
 | `gdrive/` | Google Drive REST client + OAuth (`auth.rs`): list, read, upload, folders, recursive search. |
 | `websearch.rs` | Keenable search + page fetch. |
+| `voice.rs` | Live voice-channel transcription: receive per-speaker PCM (songbird), segment on silence, transcribe each utterance, assemble a meeting transcript + summary. |
 | `memory.rs` | Per-bot memory notes: save, consolidate, and produce prompt guidance. |
 | `config.rs` | Config types and persistence, plus migration of the legacy single-bot config. |
 | `api.rs` | The localhost control API (`GET /bots`, start/stop/toggle). |
@@ -71,6 +72,17 @@ signing/packaging). Instead:
 
 All DB and cosine work runs inside `tokio::task::spawn_blocking` so it never blocks the
 async runtime.
+
+## Voice transcription
+
+`voice.rs` uses **songbird** (serenity's voice library) with `DecodeMode::Decode`, so each
+20 ms tick delivers decoded 48 kHz stereo PCM per speaker (SSRC). A `Meeting` accumulates
+audio per speaker, closes an utterance after ~0.8 s of silence (or a 30 s cap), downmixes
+to mono, wraps it in a WAV, and transcribes it off the receive path via
+`model::transcribe`. Utterances are ordered and speaker-labelled (SSRC → user id from
+speaking-state updates); on leave they're assembled into a transcript + summary. This pulls
+a native Opus dependency (`audiopus`), which is why the build needs an Opus/CMake toolchain
+and CI sets `CMAKE_POLICY_VERSION_MINIMUM`.
 
 ## Events
 

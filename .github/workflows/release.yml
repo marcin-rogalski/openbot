@@ -7,6 +7,11 @@ on:
     tags:
       - "v*"
 
+env:
+  # songbird's bundled libopus (audiopus_sys) ships a pre-3.5 CMakeLists that
+  # modern CMake rejects without this policy shim.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 jobs:
   release:
     permissions:
@@ -39,7 +44,9 @@ jobs:
             patchelf \
             build-essential \
             libxdo-dev \
-            libssl-dev
+            libssl-dev \
+            cmake \
+            libopus-dev
 
       - uses: actions/setup-node@v4
         with:

@@ -26,6 +26,7 @@ Points the bot at your OpenAI-compatible server.
 | **Base URL** | `http://127.0.0.1:8080/v1` | Chat + embeddings live under this. |
 | **Model name** | — | The chat model id your server expects. |
 | **Embedding model** | `nomic-embed-text` | Used for the knowledge base; must be served at `/embeddings`. |
+| **Transcription model** | `whisper-1` | Turns audio into text; must be served at `/audio/transcriptions`. |
 | **API key** | — | Only if your server requires auth (sent as a bearer token). |
 
 ### Behavior
@@ -89,6 +90,13 @@ See [tools.md](tools.md#memory) for how the bot uses it.
 - **Enable attachments** (on by default) — when someone posts a file in a channel the bot
   watches, tools that subscribe to the attachment gate can react to it (e.g. Google Drive
   archives + indexes relevant files). See [tools.md](tools.md#attachment-ingestion).
+
+### Audio transcription
+
+- **Enable audio transcription** (on by default) — audio you post is transcribed via the
+  transcription model; the bot replies with a transcript + summary `.md`, and the bot can
+  also join a voice channel to transcribe a live call. See
+  [tools.md](tools.md#audio--voice-transcription).
 
 ## The tools you can add
 

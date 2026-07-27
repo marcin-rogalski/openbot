@@ -20,7 +20,11 @@ the token. Under **Privileged Gateway Intents**, enable **Message Content Intent
 reads message text to respond). Then invite it to your server with the **Send Messages** and
 **Read Message History** permissions.
 
-**3. (Build from source only)** Rust and Tauri's system dependencies — see below.
+**3. (Build from source only)** Rust and Tauri's system dependencies (see below), plus a
+**CMake + Opus toolchain** for voice transcription — on macOS `brew install cmake opus`, on
+Debian/Ubuntu `sudo apt-get install cmake libopus-dev`. If the bundled Opus fails to
+configure with a modern CMake, set `CMAKE_POLICY_VERSION_MINIMUM=3.5` in the build
+environment (the CI workflows already do).
 
 ## Install
 

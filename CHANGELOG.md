@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Audio transcription** — audio attachments are transcribed via the model server's
+  `/audio/transcriptions` endpoint (new **Transcription model** setting); the bot posts a
+  transcript + summary `.md`, feeds the transcript into its reply, and (with a Drive tool)
+  saves + indexes both into the knowledge base. Per-bot toggle.
+- **Live voice-channel transcription** — the bot can join a voice channel (via a "join the
+  call" mention), receive per-speaker audio (songbird), transcribe each utterance, and on
+  leave post a speaker-labelled meeting transcript + summary (also indexed with a Drive
+  tool). It announces that it's transcribing when it joins (consent).
+- **Scheduled-meeting awareness** — when a Discord scheduled event tied to a voice channel
+  goes live, the bot offers to join and transcribe it.
+- Collapsible long tool-call rows in the activity feed.
+
+### Notes
+
+- Voice transcription pulls a native Opus dependency; building needs a CMake/Opus toolchain
+  and CI sets `CMAKE_POLICY_VERSION_MINIMUM=3.5`.
+
 ## [0.1.0] - 2026-07-27
 
 First release: openbot runs local-LLM-powered Discord bots from a desktop app.

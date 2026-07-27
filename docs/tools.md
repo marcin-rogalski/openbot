@@ -93,3 +93,38 @@ Memory is bounded by **max notes** and a **char budget**
 ([configuration](configuration.md#memory)). When it overflows, the model **consolidates**
 older notes into a tighter summary; if that fails, it falls back to dropping the oldest
 (FIFO). Memories are stored locally per bot.
+
+## Audio & voice transcription
+
+Transcription is a built-in capability (toggled per bot, on by default), backed by your
+model server's `/audio/transcriptions` endpoint (the **Transcription model** setting —
+e.g. whisper.cpp, faster-whisper, LM Studio, or OpenAI Whisper). It works in two modes.
+
+### Audio files
+
+Post an audio file (`.mp3`, `.m4a`, `.wav`, `.ogg`, `.opus`, `.flac`, …) in a channel the
+bot is in. The bot transcribes it and replies with two attachments — `*.transcript.md` and
+`*.summary.md` (overview + key points + action items) — and feeds the transcript into its
+answer so it can act on the audio the same turn. With a **Google Drive** tool enabled, both
+files are saved to Drive and indexed into the knowledge base, so you can `ask` about them
+later. Files up to ~25 MB are transcribed.
+
+### Live voice channels
+
+The bot can join a voice channel and transcribe the conversation in real time:
+
+- **Join** — while you're in a voice channel, mention the bot with something like
+  *"join the call and take notes"*. It joins, **announces that it's transcribing**
+  (consent — it never records silently), and starts listening.
+- **During** — it receives each speaker's audio, segments it on silence, and transcribes
+  each utterance, building a running, speaker-labelled transcript.
+- **Leave** — say *"stop"* or *"leave"*. The bot posts a `meeting-<time>.transcript.md` +
+  `.summary.md` to the channel and (with a Drive tool) saves + indexes them.
+
+**Scheduled meetings** — when a Discord *scheduled event* tied to a voice channel goes
+live, the bot posts in the server's system channel asking whether it should join and
+transcribe; confirm with a *"join the call"* mention.
+
+Live voice needs the `GUILD_VOICE_STATES` and `GUILD_SCHEDULED_EVENTS` gateway intents
+(both non-privileged, on by default). Building from source requires an Opus toolchain —
+see [getting-started](getting-started.md#prerequisites).
