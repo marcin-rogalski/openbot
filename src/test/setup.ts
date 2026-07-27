@@ -12,6 +12,10 @@ console.error = (...args: unknown[]) => {
   realConsoleError(...args)
 }
 
+// jsdom doesn't implement scrollIntoView; the activity feed calls it to keep
+// the newest row in view. Stub it so those components render in tests.
+Element.prototype.scrollIntoView = vi.fn()
+
 // jsdom doesn't implement matchMedia; next-themes (via Chakra's Provider) needs
 // it. Provide a minimal stub so components mount in tests.
 if (!window.matchMedia) {

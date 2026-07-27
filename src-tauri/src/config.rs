@@ -338,3 +338,60 @@ pub fn new_id(prefix: &str) -> String {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_config_defaults() {
+        let m = ModelConfig::default();
+        assert_eq!(m.base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(m.embedding_model, "nomic-embed-text");
+        assert_eq!(m.transcription_model, "whisper-1");
+    }
+
+    #[test]
+    fn bot_defaults() {
+        let b = BotConfig::default();
+        assert!(b.attachments_enabled);
+        assert!(b.transcription_enabled);
+        assert!(!b.memory_enabled);
+        assert_eq!(b.followup_window_messages, 5);
+    }
+
+    #[test]
+    fn chat_url_trims_trailing_slash() {
+        let mut b = BotConfig::default();
+        b.model.base_url = "http://x/v1/".into();
+        assert_eq!(b.chat_url(), "http://x/v1/chat/completions");
+    }
+
+    #[test]
+    fn is_ready_requires_token_and_model() {
+        let mut b = BotConfig::default();
+        assert!(!b.is_ready());
+        b.discord_token = "t".into();
+        b.model.model_name = "m".into();
+        assert!(b.is_ready());
+    }
+
+    #[test]
+    fn tool_instance_ready_checks() {
+        let mut t = ToolInstance::default();
+        assert!(!t.drive_ready());
+        t.client_id = "a".into();
+        t.client_secret = "b".into();
+        t.folder_id = "c".into();
+        assert!(t.drive_ready());
+        assert!(!ToolInstance::default().web_ready());
+    }
+
+    #[test]
+    fn new_id_unique_and_prefixed() {
+        let a = new_id("bot");
+        let b = new_id("bot");
+        assert!(a.starts_with("bot-"));
+        assert_ne!(a, b);
+    }
+}

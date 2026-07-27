@@ -100,3 +100,25 @@ the shell (`App.tsx`), the per-bot view and tabs (`components/BotView.tsx`), the
 feed (`components/ActivityFeed.tsx`), and the settings/section components. Bot control and
 event subscriptions live in `src/lib/bot.ts`; config types mirror the backend in
 `src/lib/config.ts`.
+
+## Planned architecture alignment
+
+The code today is layered but tangled (orchestration modules call concrete infrastructure
+directly). The agreed target — being migrated incrementally, tests first:
+
+**Rust → hexagonal (ports & adapters):**
+`domain/` (pure types + rules, no IO) · `ports/` (traits: `ChatModel`, `Embedder`,
+`Transcriber`, `KnowledgeIndex`, `FileStore`, `WebSearch`, `ChatPlatform`, `ConfigStore`,
+`EventSink`) · `application/` (use-cases over ports: reply loop, ingest, reindex, meeting
+lifecycle) · `adapters/` (openai, gdrive, keenable, sqlite, discord, voice, store,
+tauri-events, os) · `interface/` (tauri commands + the localhost HTTP API). This makes the
+domain + application layers unit-testable against fake ports.
+
+**Frontend → layered / FSD-lite:**
+`shared/` (design-system primitives + utils) · `entities/` (domain types + pure helpers) ·
+`features/` (cohesive slices with their own components + hooks) · `ipc/` (the Tauri
+boundary — the frontend's port to the Rust core) · `app/` (shell, layout, providers).
+
+**Testing:** coverage is reported (not gated). Rust uses `cargo-llvm-cov`; the frontend uses
+Vitest's v8 provider. Unit tests target pure logic today; application-layer tests with fake
+adapters follow the ports migration.

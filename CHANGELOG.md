@@ -19,6 +19,11 @@ All notable changes to this project are documented here. The format is based on
 - **Scheduled-meeting awareness** — when a Discord scheduled event tied to a voice channel
   goes live, the bot offers to join and transcribe it.
 - Collapsible long tool-call rows in the activity feed.
+- **Test coverage (phase 1):** unit tests for pure logic on both sides — Rust
+  `#[cfg(test)]` modules (42 tests: config, policies, chunking, tool-call parsing, RRF/cosine,
+  WAV/downmix, memory trimming, message splitting, voice commands…) and Vitest/RTL component
+  + helper tests on the frontend. Coverage reporting wired into CI (`cargo-llvm-cov` +
+  Vitest v8), report-only for now.
 
 ### Notes
 

@@ -296,3 +296,22 @@ fn pcm_to_wav(mono: &[i16], sample_rate: u32) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downmix_averages_channels() {
+        assert_eq!(downmix_mono(&[100i16, 200, -100, 100]), vec![150i16, 0]);
+    }
+
+    #[test]
+    fn wav_header_valid() {
+        let wav = pcm_to_wav(&[0i16, 1, -1], 48_000);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(wav.len(), 44 + 6);
+    }
+}

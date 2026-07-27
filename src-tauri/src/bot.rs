@@ -442,3 +442,32 @@ pub fn resolve_tool_approval(app: AppHandle, id: String, decision: String) {
     }
     let _ = app.emit(TOOL_APPROVAL_RESOLVED_EVENT, json!({ "id": id }));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BotConfig;
+
+    fn bot_with(policies: &[(&str, &str)]) -> BotConfig {
+        let mut b = BotConfig::default();
+        for (k, v) in policies {
+            b.tool_policies.insert((*k).to_string(), (*v).to_string());
+        }
+        b
+    }
+
+    #[test]
+    fn default_policy_read_allow_write_ask() {
+        let b = BotConfig::default();
+        assert!(matches!(policy_for(&b, "x/op", false), Policy::Allow));
+        assert!(matches!(policy_for(&b, "x/op", true), Policy::Ask));
+    }
+
+    #[test]
+    fn explicit_policy_overrides_default() {
+        let b = bot_with(&[("t/read", "deny"), ("t/write", "allow")]);
+        assert!(matches!(policy_for(&b, "t/read", false), Policy::Deny));
+        assert!(matches!(policy_for(&b, "t/write", true), Policy::Allow));
+        assert!(matches!(policy_for(&b, "t/unset", false), Policy::Allow));
+    }
+}

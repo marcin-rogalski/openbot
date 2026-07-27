@@ -6,7 +6,15 @@
     "useIgnoreFile": false
   },
   "files": {
-    "includes": ["**", "!dist", "!src-tauri/target", "!src-tauri/gen", "!node_modules"]
+    "includes": [
+      "**",
+      "!dist",
+      "!coverage",
+      "!storybook-static",
+      "!src-tauri/target",
+      "!src-tauri/gen",
+      "!node_modules"
+    ]
   },
   "formatter": {
     "enabled": true,

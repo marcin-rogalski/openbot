@@ -291,3 +291,73 @@ pub fn delete_memory(app: AppHandle, bot_id: String, id: String) {
 pub fn clear_memories(app: AppHandle, bot_id: String) {
     clear(&app, &bot_id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BotConfig;
+
+    fn note(text: &str, created: u64) -> Memory {
+        Memory {
+            id: format!("n{created}"),
+            kind: "note".into(),
+            text: text.into(),
+            created,
+        }
+    }
+    fn rule(text: &str) -> Memory {
+        Memory {
+            id: "r".into(),
+            kind: "rule".into(),
+            text: text.into(),
+            created: 0,
+        }
+    }
+
+    #[test]
+    fn total_chars_sums_text() {
+        assert_eq!(total_chars(&[note("abc", 1), note("de", 2)]), 5);
+    }
+
+    fn capped_bot() -> BotConfig {
+        BotConfig {
+            memory_max_notes: 1,
+            memory_char_budget: 10_000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn over_budget_by_note_count() {
+        let b = capped_bot();
+        assert!(over_budget(&[note("a", 1), note("b", 2)], &b));
+        assert!(!over_budget(&[note("a", 1)], &b));
+    }
+
+    #[test]
+    fn fifo_trim_keeps_rules_drops_oldest_notes() {
+        let b = capped_bot();
+        let out = fifo_trim(vec![rule("keep me"), note("old", 1), note("new", 2)], &b);
+        assert!(out.iter().any(|m| m.kind == "rule" && m.text == "keep me"));
+        let notes: Vec<&Memory> = out.iter().filter(|m| m.kind == "note").collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, "new");
+    }
+
+    #[test]
+    fn render_parse_roundtrip() {
+        let rendered = render_lines(&[rule("always X"), note("fact Y", 5)]);
+        let parsed = parse_lines(&rendered);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].kind, "rule");
+        assert_eq!(parsed[0].text, "always X");
+        assert_eq!(parsed[1].kind, "note");
+    }
+
+    #[test]
+    fn guidance_includes_only_rules() {
+        let g = guidance(&[rule("archive PDFs"), note("fact", 1)]);
+        assert!(g.contains("archive PDFs"));
+        assert!(!g.contains("fact"));
+    }
+}

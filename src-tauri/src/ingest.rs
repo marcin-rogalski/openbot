@@ -126,3 +126,43 @@ fn break_point(chars: &[char], from: usize, to: usize) -> Option<usize> {
     }
     sentence.or(whitespace)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_audio() {
+        assert!(is_audio("note.mp3", ""));
+        assert!(is_audio("x", "audio/ogg"));
+        assert!(!is_audio("doc.pdf", "application/pdf"));
+    }
+
+    #[test]
+    fn detects_text() {
+        assert!(is_text("text/plain", "txt"));
+        assert!(is_text("", "rs"));
+        assert!(!is_text("application/octet-stream", "bin"));
+    }
+
+    #[test]
+    fn extract_text_reads_utf8() {
+        assert_eq!(
+            extract_text(b"hello world", "a.txt", "text/plain").as_deref(),
+            Some("hello world")
+        );
+        assert!(extract_text(&[0xff, 0xfe], "a.bin", "application/octet-stream").is_none());
+    }
+
+    #[test]
+    fn chunk_short_is_single() {
+        assert_eq!(chunk("short"), vec!["short".to_string()]);
+        assert!(chunk("   ").is_empty());
+    }
+
+    #[test]
+    fn chunk_long_splits() {
+        let text = "sentence. ".repeat(400);
+        assert!(chunk(&text).len() > 1);
+    }
+}

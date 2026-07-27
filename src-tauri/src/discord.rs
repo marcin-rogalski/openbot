@@ -1247,3 +1247,53 @@ fn sanitize_reply(text: &str) -> String {
         .trim()
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_short_is_single() {
+        assert_eq!(split_message("hello", 2000), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn split_long_is_multiple() {
+        assert!(split_message(&"word ".repeat(1000), 2000).len() > 1);
+    }
+
+    #[test]
+    fn voice_command_detection() {
+        assert!(matches!(
+            voice_command("please join the voice call"),
+            Some(VoiceCmd::Join)
+        ));
+        assert!(matches!(
+            voice_command("ok stop the recording"),
+            Some(VoiceCmd::Leave)
+        ));
+        assert!(voice_command("hello there").is_none());
+        assert!(voice_command("join the party").is_none());
+    }
+
+    #[test]
+    fn sanitize_strips_scaffolding() {
+        let s = sanitize_reply("Answer line\nTOOL_CALL {\"x\":1}\nTOOL_RESULT: y");
+        assert_eq!(s, "Answer line");
+    }
+
+    #[test]
+    fn with_sources_prepends_header() {
+        let out = with_sources(&["http://a".to_string()], "body");
+        assert!(out.contains("**Sources**"));
+        assert!(out.ends_with("body"));
+        assert_eq!(with_sources(&[], "body"), "body");
+    }
+
+    #[test]
+    fn first_line_and_truncate() {
+        assert_eq!(first_line("a\nb"), "a");
+        assert_eq!(truncate("abc", 10), "abc");
+        assert!(truncate(&"x".repeat(20), 5).ends_with('…'));
+    }
+}

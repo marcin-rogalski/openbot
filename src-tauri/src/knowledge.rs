@@ -309,3 +309,33 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let v = vec![0.5f32, -1.0, 2.0];
+        assert_eq!(decode(&encode(&v)), v);
+    }
+
+    #[test]
+    fn cosine_identical_is_one() {
+        let v = vec![3.0f32, 4.0];
+        assert!((cosine_sim(&v, &v, norm(&v)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_orthogonal_is_zero() {
+        let q = vec![1.0f32, 0.0];
+        let v = vec![0.0f32, 1.0];
+        assert!(cosine_sim(&q, &v, norm(&q)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fts_query_filters_short_terms() {
+        assert_eq!(fts_query("the cat"), Some("\"the\" OR \"cat\"".to_string()));
+        assert!(fts_query("a !").is_none());
+    }
+}

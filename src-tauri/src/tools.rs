@@ -1095,3 +1095,61 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out.push_str("…[truncated]");
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_normalizes() {
+        assert_eq!(slugify("Case Files!"), "case_files");
+        assert_eq!(slugify("  a--b  "), "a_b");
+        assert_eq!(slugify("!!!"), "");
+    }
+
+    #[test]
+    fn domain_strips_scheme_and_www() {
+        assert_eq!(domain_of("https://www.example.com/path"), "example.com");
+        assert_eq!(domain_of("http://sub.host.org"), "sub.host.org");
+    }
+
+    #[test]
+    fn parent_or_falls_back_to_root() {
+        assert_eq!(parent_or("  ", "root"), "root");
+        assert_eq!(parent_or(" child ", "root"), "child");
+    }
+
+    #[test]
+    fn count_prefix_counts_matching_lines() {
+        assert_eq!(count_prefix("- a\n- b\nx", "- "), 2);
+    }
+
+    #[test]
+    fn quoted_formats_with_and_without_query() {
+        assert_eq!(
+            quoted("Searched", "cats", 3),
+            "Searched for \"cats\" — 3 result(s)"
+        );
+        assert_eq!(quoted("Searched", "  ", 0), "Searched — 0 result(s)");
+    }
+
+    #[test]
+    fn truncate_marks_overflow() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert!(truncate(&"x".repeat(50), 10).ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn unique_slug_dedupes() {
+        let mut used = std::collections::HashSet::new();
+        assert_eq!(unique_slug("Drive", "d", &mut used), "drive");
+        assert_eq!(unique_slug("Drive", "d", &mut used), "drive2");
+    }
+
+    #[test]
+    fn drive_op_flags_and_suffix() {
+        assert!(DriveOp::Create.write());
+        assert!(!DriveOp::Search.write());
+        assert_eq!(DriveOp::Ask.suffix(), "ask");
+    }
+}

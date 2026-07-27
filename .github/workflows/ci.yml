@@ -28,7 +28,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npx biome check .
-      - run: npm run test
+      - run: npm run test:coverage
       - run: npm run build-storybook
 
   rust:
@@ -51,7 +51,8 @@ jobs:
             libopus-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -61,6 +62,6 @@ jobs:
       - name: clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
-      - name: check
+      - name: test + coverage
         working-directory: src-tauri
-        run: cargo check --all-targets
+        run: cargo llvm-cov --all-targets --summary-only

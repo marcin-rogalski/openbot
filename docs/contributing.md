@@ -27,6 +27,7 @@ npm run tauri:dev      # run the app with hot-reload
 | `npm run typecheck` | `tsc --noEmit`. |
 | `npm run check` | Biome check **and write** fixes. |
 | `npm run test` | Vitest (React Testing Library). |
+| `npm run test:coverage` | Vitest with a v8 coverage report. |
 | `npm run storybook` | Storybook dev server. |
 | `npm run build-storybook` | Build the static Storybook. |
 
@@ -41,11 +42,23 @@ Run the equivalents locally before pushing:
 
 ```sh
 npm run typecheck && npx biome check . && npm run test && npm run build-storybook
-cd src-tauri && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
+cd src-tauri && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
 Note clippy runs with `-D warnings`, so warnings fail the build. Biome (not ESLint) is the
 JS/TS linter/formatter.
+
+### Coverage
+
+Coverage is **reported, not gated** (no failing threshold yet — we're growing it).
+
+- **Frontend:** `npm run test:coverage` (Vitest + v8) → summary in the terminal, HTML in
+  `coverage/`.
+- **Rust:** CI uses [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov); locally,
+  `cargo install cargo-llvm-cov` then `cd src-tauri && cargo llvm-cov --summary-only`.
+
+Unit tests live next to the code: Rust in `#[cfg(test)] mod tests` blocks at the bottom of
+each module; frontend as `*.test.ts(x)` beside the file under test.
 
 ## Adding a new tool
 

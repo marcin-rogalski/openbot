@@ -629,3 +629,38 @@ fn derive_metrics(usage: Option<&Usage>, elapsed_secs: f64) -> Metrics {
         inference_tps,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tool_call_extracts_name_and_args() {
+        let t =
+            "sure\nTOOL_CALL {\"tool\": \"drive_search\", \"args\": {\"query\": \"x\"}} trailing";
+        let c = parse_tool_call(t).unwrap();
+        assert_eq!(c.tool, "drive_search");
+        assert_eq!(c.args["query"], "x");
+    }
+
+    #[test]
+    fn parse_tool_call_none_when_absent() {
+        assert!(parse_tool_call("just a normal reply").is_none());
+    }
+
+    #[test]
+    fn parse_tool_call_defaults_missing_args() {
+        let c = parse_tool_call("TOOL_CALL {\"tool\": \"x\"}").unwrap();
+        assert_eq!(c.tool, "x");
+        assert!(c.args.is_object());
+    }
+
+    #[test]
+    fn looks_repetitive_flags_cycles() {
+        assert!(looks_repetitive(&" ".repeat(200)));
+        assert!(looks_repetitive(&"ab".repeat(200)));
+        let varied = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
+                      tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam.";
+        assert!(!looks_repetitive(varied));
+    }
+}
