@@ -9,14 +9,27 @@ function fmtTps(value: number | null | undefined, running: boolean): string {
 
 export function StatusBar({
   running,
+  thinking,
   metrics,
 }: {
   running: boolean
+  thinking?: boolean
   metrics?: MetricsData
 }) {
   return (
     <FooterBar className="status-bar">
-      <Text>{running ? "Running" : "Stopped"}</Text>
+      {thinking ? (
+        <Text>
+          Thinking
+          <span className="dots">
+            <span />
+            <span />
+            <span />
+          </span>
+        </Text>
+      ) : (
+        <Text>{running ? "Running" : "Stopped"}</Text>
+      )}
       <Flex align="center" gap="4">
         <Text>
           <Text as="span" color="fg.subtle">

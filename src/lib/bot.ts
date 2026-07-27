@@ -7,6 +7,7 @@ import { useEffect, useState } from "react"
 export const STATUS_EVENT = "bot://status"
 export const ACTIVITY_EVENT = "bot://activity"
 export const STREAM_EVENT = "bot://stream"
+export const THINKING_EVENT = "bot://thinking"
 export const METRICS_EVENT = "bot://metrics"
 export const TOOL_APPROVAL_EVENT = "bot://tool-approval"
 export const TOOL_APPROVAL_RESOLVED_EVENT = "bot://tool-approval-resolved"
@@ -85,6 +86,27 @@ export function useRunningBots(): Set<string> {
   }, [])
 
   return running
+}
+
+/** Set of bots currently working on a reply, from `bot://thinking`. */
+export function useThinkingBots(): Set<string> {
+  const [thinking, setThinking] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    const unlisten = listen<{ botId: string; thinking: boolean }>(THINKING_EVENT, (e) => {
+      setThinking((prev) => {
+        const next = new Set(prev)
+        if (e.payload.thinking) next.add(e.payload.botId)
+        else next.delete(e.payload.botId)
+        return next
+      })
+    })
+    return () => {
+      unlisten.then((off) => off())
+    }
+  }, [])
+
+  return thinking
 }
 
 /** Per-bot activity feeds, accumulated from `bot://activity`; live model-call

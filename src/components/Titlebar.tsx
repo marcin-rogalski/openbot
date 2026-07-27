@@ -1,5 +1,6 @@
 import { Flex, IconButton } from "@chakra-ui/react"
 import { LuSettings } from "react-icons/lu"
+import { ThemeToggle } from "./ThemeToggle"
 
 /**
  * Transparent, draggable title bar (macOS "Overlay" style). The traffic lights
@@ -20,8 +21,10 @@ export function Titlebar({
       h="36px"
       align="center"
       justify="flex-end"
+      gap="1"
       pr="1.5"
     >
+      <ThemeToggle />
       <IconButton
         aria-label="General settings"
         size="2xs"
