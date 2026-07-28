@@ -12,7 +12,9 @@ All notable changes to this project are documented here. The format is based on
   accepts a link or id), copy it into the tool's folder + index it (`save_link`), or, for an
   audio/video link, download + transcribe it and save a transcript + summary
   (`transcribe_link`). Recognizes the common link shapes; the file must be shared with the
-  bot's Google account (or public).
+  bot's Google account (or public). `transcribe_link` streams large files to disk and
+  transcribes them in ~5-minute chunks, so long meeting/conference recordings (and the audio
+  track of **video** files) work with bounded memory (up to ~2 GB).
 - **Client-side audio decoding** — posted mp3 / m4a / FLAC / Ogg-Vorbis are decoded to WAV
   inside openbot (pure-Rust `symphonia`, new `audio.rs`) before transcription, so the model
   server needs no extra codecs (no ffmpeg). Opus (Discord voice messages) still needs a

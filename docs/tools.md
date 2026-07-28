@@ -53,8 +53,10 @@ Paste a Google Drive link and tell the bot what to do with it:
 
 - *"summarize this"* → `read` fetches the doc's text and the bot summarizes it (nothing saved).
 - *"save this to our drive"* → `save_link` copies the file into the tool's folder and indexes it.
-- *"transcribe this"* (audio/video link) → `transcribe_link` downloads it, transcribes, and
-  saves a transcript + summary into the folder.
+- *"transcribe this"* (audio **or video** link) → `transcribe_link` streams the file to disk,
+  splits it into ~5-minute WAV chunks, transcribes each, and saves a transcript + summary into
+  the folder. This handles **long recordings** (meetings, conference audio) with bounded
+  memory — including video files, whose audio track is extracted. Files up to ~2 GB.
 
 It recognizes the usual link shapes (`/file/d/<id>`, `/document/d/<id>`, `?id=<id>`,
 `/drive/folders/<id>`). **Access requirement:** the bot reads with *its own* Google account,

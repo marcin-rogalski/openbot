@@ -23,6 +23,9 @@ pub struct DriveFile {
     pub mime_type: String,
     #[serde(default)]
     pub modified_time: Option<String>,
+    /// Size in bytes (Drive returns it as a string); absent for Google-native files.
+    #[serde(default)]
+    pub size: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -356,7 +359,7 @@ pub async fn file_meta(
     let tok = token(app, client_id, client_secret).await?;
     let resp = reqwest::Client::new()
         .get(format!("{DRIVE_API}/files/{id}"))
-        .query(&[("fields", "id,name,mimeType,modifiedTime")])
+        .query(&[("fields", "id,name,mimeType,modifiedTime,size")])
         .bearer_auth(&tok)
         .send()
         .await
@@ -403,13 +406,17 @@ pub async fn copy_to(
     Ok(copied.id)
 }
 
-/// Download a file's raw bytes (for binary types like audio/video).
-pub async fn download_media(
+/// Stream a file's raw bytes to `dest` on disk (bounded memory), for large media.
+pub async fn download_to_path(
     app: &AppHandle,
     client_id: &str,
     client_secret: &str,
     id: &str,
-) -> Result<Vec<u8>, String> {
+    dest: &std::path::Path,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
     let tok = token(app, client_id, client_secret).await?;
     let resp = reqwest::Client::new()
         .get(format!("{DRIVE_API}/files/{id}"))
@@ -421,10 +428,20 @@ pub async fn download_media(
     if !resp.status().is_success() {
         return Err(error_body(resp).await);
     }
-    resp.bytes()
+    let mut file = tokio::fs::File::create(dest)
         .await
-        .map(|b| b.to_vec())
-        .map_err(|e| format!("read failed: {e}"))
+        .map_err(|e| format!("can't create temp file: {e}"))?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("download error: {e}"))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| format!("write failed: {e}"))?;
+    }
+    file.flush()
+        .await
+        .map_err(|e| format!("flush failed: {e}"))?;
+    Ok(())
 }
 
 /// Create a subfolder under `parent` and return its id.

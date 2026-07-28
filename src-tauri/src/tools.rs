@@ -940,6 +940,11 @@ async fn transcribe_link(
     folder: &str,
     url: &str,
 ) -> String {
+    /// Refuse downloads larger than this (~2 GB) to avoid pathological transfers.
+    const MAX_BYTES: u64 = 2_000_000_000;
+    /// Cap the number of ~5-minute chunks (~8 h) so one call can't run forever.
+    const MAX_CHUNKS: usize = 96;
+
     let id = gdrive::file_id_from_link(url);
     if id.trim().is_empty() {
         return "error: no Google Drive link or id provided".to_string();
@@ -959,30 +964,102 @@ async fn transcribe_link(
             meta.name, meta.mime_type
         );
     }
-    let bytes = match gdrive::download_media(app, client_id, client_secret, &id).await {
-        Ok(b) => b,
-        Err(e) => return format!("error: download failed: {e}"),
-    };
+    if let Some(bytes) = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok()) {
+        if bytes > MAX_BYTES {
+            return format!(
+                "error: \"{}\" is {:.1} GB — too large to transcribe (limit ~2 GB).",
+                meta.name,
+                bytes as f64 / 1e9
+            );
+        }
+    }
 
-    // Normalise to WAV off-thread (mp3/m4a/etc.); fall back to the raw bytes.
-    let (send_bytes, send_name, send_mime) = {
-        let raw = bytes.clone();
-        let fname = meta.name.clone();
-        let ct = meta.mime_type.clone();
-        let decoded =
-            tokio::task::spawn_blocking(move || crate::audio::decode_to_wav(&raw, &fname, &ct))
-                .await
-                .ok()
-                .flatten();
-        match decoded {
-            Some(wav) => (wav, "audio.wav".to_string(), "audio/wav".to_string()),
-            None => (bytes, meta.name.clone(), meta.mime_type.clone()),
+    // Work in a temp dir: stream the download to disk, split into WAV chunks,
+    // transcribe each — bounded memory, so long recordings work.
+    let work = std::env::temp_dir().join(config::new_id("openbot-tx"));
+    if let Err(e) = std::fs::create_dir_all(&work) {
+        return format!("error: can't create temp dir: {e}");
+    }
+    let src = work.join("source");
+
+    bot::emit_log(
+        app,
+        &bot.id,
+        format!("transcribe_link: downloading \"{}\"…", meta.name),
+    );
+    if let Err(e) = gdrive::download_to_path(app, client_id, client_secret, &id, &src).await {
+        let _ = std::fs::remove_dir_all(&work);
+        return format!("error: download failed: {e}");
+    }
+
+    let (chunks, truncated) = {
+        let (src_c, work_c, filename, mime) = (
+            src.clone(),
+            work.clone(),
+            meta.name.clone(),
+            meta.mime_type.clone(),
+        );
+        let res = tokio::task::spawn_blocking(move || {
+            crate::audio::split_to_wav_chunks(
+                &src_c,
+                &filename,
+                &mime,
+                crate::audio::CHUNK_SECS,
+                MAX_CHUNKS,
+                &work_c,
+            )
+        })
+        .await;
+        match res {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                let _ = std::fs::remove_dir_all(&work);
+                return format!("error: couldn't decode audio: {e}");
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&work);
+                return format!("error: decode task failed: {e}");
+            }
         }
     };
-    let transcript = match model::transcribe(bot, send_bytes, &send_name, &send_mime).await {
-        Ok(t) => t,
-        Err(e) => return format!("error: transcription failed: {e}"),
-    };
+    let _ = std::fs::remove_file(&src); // no longer needed once split
+
+    let n = chunks.len();
+    let mut transcript = String::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        bot::emit_log(
+            app,
+            &bot.id,
+            format!("transcribe_link: chunk {}/{n}…", i + 1),
+        );
+        let Ok(bytes) = std::fs::read(chunk) else {
+            continue;
+        };
+        match model::transcribe(bot, bytes, "chunk.wav", "audio/wav").await {
+            Ok(t) if !t.trim().is_empty() => {
+                if !transcript.is_empty() {
+                    transcript.push(' ');
+                }
+                transcript.push_str(t.trim());
+            }
+            Ok(_) => {}
+            Err(e) => bot::emit_log(
+                app,
+                &bot.id,
+                format!("transcribe_link: chunk {} failed: {e}", i + 1),
+            ),
+        }
+        let _ = std::fs::remove_file(chunk);
+    }
+    let _ = std::fs::remove_dir_all(&work);
+
+    if transcript.trim().is_empty() {
+        return "error: transcription produced no text".to_string();
+    }
+    if truncated {
+        transcript.push_str("\n\n[transcript truncated — recording exceeded the length cap]");
+    }
+
     let summary = model::summarize_transcript(bot, &transcript)
         .await
         .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
