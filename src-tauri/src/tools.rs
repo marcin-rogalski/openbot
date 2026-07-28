@@ -37,10 +37,12 @@ enum DriveOp {
     Delete,
     Reindex,
     Backfill,
+    SaveLink,
+    TranscribeLink,
 }
 
 impl DriveOp {
-    const ALL: [DriveOp; 11] = [
+    const ALL: [DriveOp; 13] = [
         DriveOp::Search,
         DriveOp::Ask,
         DriveOp::ListSources,
@@ -52,6 +54,8 @@ impl DriveOp {
         DriveOp::Delete,
         DriveOp::Reindex,
         DriveOp::Backfill,
+        DriveOp::SaveLink,
+        DriveOp::TranscribeLink,
     ];
 
     fn suffix(self) -> &'static str {
@@ -67,6 +71,8 @@ impl DriveOp {
             DriveOp::Delete => "delete",
             DriveOp::Reindex => "reindex",
             DriveOp::Backfill => "backfill_attachments",
+            DriveOp::SaveLink => "save_link",
+            DriveOp::TranscribeLink => "transcribe_link",
         }
     }
 
@@ -79,6 +85,8 @@ impl DriveOp {
                 | DriveOp::Delete
                 | DriveOp::Reindex
                 | DriveOp::Backfill
+                | DriveOp::SaveLink
+                | DriveOp::TranscribeLink
         )
     }
 
@@ -99,8 +107,10 @@ impl DriveOp {
             }
             DriveOp::List => format!("List the files in \"{folder_name}\"."),
             DriveOp::Read => format!(
-                "Read one file's full text by id (from \"{folder_name}\"). Handles text files, \
-                 Google Docs/Sheets, and PDFs (text is extracted, OCR included)."
+                "Read a file's full text by id OR by a pasted Google Drive share link (in \
+                 \"{folder_name}\" or anywhere the link is shared with this bot's account). \
+                 Handles text files, Google Docs/Sheets, and PDFs (text extracted, OCR included). \
+                 Use this to summarise a linked doc without saving it."
             ),
             DriveOp::Create => format!("Create a new plain-text file in \"{folder_name}\"."),
             DriveOp::CreateFolder => format!(
@@ -117,6 +127,16 @@ impl DriveOp {
                 "Scan recent messages in this channel and archive relevant attachments to \
                  \"{folder_name}\". Use when the user asks to save/archive files posted earlier."
             ),
+            DriveOp::SaveLink => format!(
+                "Save (copy) a file from a pasted Google Drive link into \"{folder_name}\" and \
+                 index it into the knowledge base. The link must be shared with this bot's Google \
+                 account (or be public). Use when the user pastes a Drive link and wants it kept."
+            ),
+            DriveOp::TranscribeLink => format!(
+                "Transcribe an audio/video file from a pasted Google Drive link: returns the \
+                 transcript and saves a transcript + summary into \"{folder_name}\". Link must be \
+                 accessible to this bot's Google account."
+            ),
         }
     }
 
@@ -128,13 +148,17 @@ impl DriveOp {
             }
             DriveOp::ListSources | DriveOp::Reindex => "{}",
             DriveOp::List => "{}",
-            DriveOp::Read | DriveOp::Delete => "{\"id\": string}",
+            DriveOp::Delete => "{\"id\": string}",
+            DriveOp::Read => "{\"id\": string (a Drive file id or a share link/url)}",
             DriveOp::Create => {
                 "{\"name\": string, \"content\": string, \"parent\": string (optional folder id)}"
             }
             DriveOp::CreateFolder => "{\"name\": string, \"parent\": string (optional folder id)}",
             DriveOp::Update => "{\"id\": string, \"content\": string}",
             DriveOp::Backfill => "{\"limit\": number (optional, recent messages to scan)}",
+            DriveOp::SaveLink | DriveOp::TranscribeLink => {
+                "{\"url\": string (a Google Drive link or file id)}"
+            }
         }
     }
 }
@@ -333,6 +357,8 @@ impl ResolvedTool {
                 DriveOp::Update => "✏️ Updated a file in Google Drive".into(),
                 DriveOp::Delete => "🗑️ Moved a Google Drive file to trash".into(),
                 DriveOp::Backfill => "📎 Backfilled attachments from recent messages".into(),
+                DriveOp::SaveLink => "📥 Saved a linked file to Google Drive".into(),
+                DriveOp::TranscribeLink => "🎙️ Transcribed a linked file".into(),
             },
             ToolKind::Web { op, .. } => match op {
                 WebOp::Search => quoted(
@@ -540,10 +566,13 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                     Ok(files) => format_files(&files),
                     Err(e) => format!("error: {e}"),
                 },
-                DriveOp::Read => match gdrive::read(app, cid, secret, &arg("id")).await {
-                    Ok(text) => truncate(&text, 6000),
-                    Err(e) => format!("error: {e}"),
-                },
+                DriveOp::Read => {
+                    let id = gdrive::file_id_from_link(&arg("id"));
+                    match gdrive::read(app, cid, secret, &id).await {
+                        Ok(text) => truncate(&text, 6000),
+                        Err(e) => format!("error: {e}"),
+                    }
+                }
                 DriveOp::Create => {
                     let parent = parent_or(&arg("parent"), folder);
                     match gdrive::create(app, cid, secret, &parent, &arg("name"), &arg("content"))
@@ -573,6 +602,36 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                 // Backfill needs Discord history, so it's intercepted in
                 // discord.rs `run_tool` before reaching here.
                 DriveOp::Backfill => "error: backfill must run with channel context".to_string(),
+                DriveOp::SaveLink => {
+                    let Some(bot) = config::load_bot(app, bot_id) else {
+                        return "error: bot config not found".to_string();
+                    };
+                    save_link(
+                        app,
+                        &bot,
+                        &tool.instance_id,
+                        cid,
+                        secret,
+                        folder,
+                        &arg("url"),
+                    )
+                    .await
+                }
+                DriveOp::TranscribeLink => {
+                    let Some(bot) = config::load_bot(app, bot_id) else {
+                        return "error: bot config not found".to_string();
+                    };
+                    transcribe_link(
+                        app,
+                        &bot,
+                        &tool.instance_id,
+                        cid,
+                        secret,
+                        folder,
+                        &arg("url"),
+                    )
+                    .await
+                }
             }
         }
         ToolKind::Web { op, api_key } => match op {
@@ -822,6 +881,144 @@ pub async fn store_text_artifact(
     )
     .await;
     Some(drive_id)
+}
+
+/// Copy a Drive file (from a link/id) into the tool's folder and index it.
+#[allow(clippy::too_many_arguments)]
+async fn save_link(
+    app: &AppHandle,
+    bot: &BotConfig,
+    instance_id: &str,
+    client_id: &str,
+    client_secret: &str,
+    folder: &str,
+    url: &str,
+) -> String {
+    let id = gdrive::file_id_from_link(url);
+    if id.trim().is_empty() {
+        return "error: no Google Drive link or id provided".to_string();
+    }
+    let meta = match gdrive::file_meta(app, client_id, client_secret, &id).await {
+        Ok(m) => m,
+        Err(e) => {
+            return format!(
+                "error: can't access that link ({e}). It must be shared with this bot's Google \
+                 account (or set to 'anyone with the link')."
+            )
+        }
+    };
+    let new_id = match gdrive::copy_to(app, client_id, client_secret, &id, folder, None).await {
+        Ok(nid) => nid,
+        Err(e) => return format!("error: couldn't copy the file: {e}"),
+    };
+    let mut note = format!("saved \"{}\" to the folder (id={new_id})", meta.name);
+    if let Ok(text) = gdrive::read(app, client_id, client_secret, &new_id).await {
+        index_text(
+            app,
+            bot,
+            instance_id,
+            &new_id,
+            &meta.name,
+            &meta.mime_type,
+            &text,
+        )
+        .await;
+        note.push_str(" and indexed it into the knowledge base");
+    }
+    note
+}
+
+/// Transcribe an audio/video Drive file (from a link/id): save a transcript +
+/// summary into the folder, index them, and return the transcript.
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_link(
+    app: &AppHandle,
+    bot: &BotConfig,
+    instance_id: &str,
+    client_id: &str,
+    client_secret: &str,
+    folder: &str,
+    url: &str,
+) -> String {
+    let id = gdrive::file_id_from_link(url);
+    if id.trim().is_empty() {
+        return "error: no Google Drive link or id provided".to_string();
+    }
+    let meta = match gdrive::file_meta(app, client_id, client_secret, &id).await {
+        Ok(m) => m,
+        Err(e) => {
+            return format!(
+                "error: can't access that link ({e}). It must be shared with this bot's Google \
+                 account."
+            )
+        }
+    };
+    if !(meta.mime_type.starts_with("audio/") || meta.mime_type.starts_with("video/")) {
+        return format!(
+            "error: \"{}\" is {} — not audio/video. Use read or save_link instead.",
+            meta.name, meta.mime_type
+        );
+    }
+    let bytes = match gdrive::download_media(app, client_id, client_secret, &id).await {
+        Ok(b) => b,
+        Err(e) => return format!("error: download failed: {e}"),
+    };
+
+    // Normalise to WAV off-thread (mp3/m4a/etc.); fall back to the raw bytes.
+    let (send_bytes, send_name, send_mime) = {
+        let raw = bytes.clone();
+        let fname = meta.name.clone();
+        let ct = meta.mime_type.clone();
+        let decoded =
+            tokio::task::spawn_blocking(move || crate::audio::decode_to_wav(&raw, &fname, &ct))
+                .await
+                .ok()
+                .flatten();
+        match decoded {
+            Some(wav) => (wav, "audio.wav".to_string(), "audio/wav".to_string()),
+            None => (bytes, meta.name.clone(), meta.mime_type.clone()),
+        }
+    };
+    let transcript = match model::transcribe(bot, send_bytes, &send_name, &send_mime).await {
+        Ok(t) => t,
+        Err(e) => return format!("error: transcription failed: {e}"),
+    };
+    let summary = model::summarize_transcript(bot, &transcript)
+        .await
+        .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
+
+    let stem = meta
+        .name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(&meta.name);
+    let transcript_md = format!(
+        "# Transcript — {}\n\n- Source: Google Drive link\n\n---\n\n{}\n",
+        meta.name, transcript
+    );
+    let summary_md = format!("# Summary — {}\n\n{}\n", meta.name, summary);
+
+    for (fname, content) in [
+        (format!("{stem}.transcript.md"), transcript_md),
+        (format!("{stem}.summary.md"), summary_md),
+    ] {
+        match gdrive::create(app, client_id, client_secret, folder, &fname, &content).await {
+            Ok(fid) => {
+                index_text(
+                    app,
+                    bot,
+                    instance_id,
+                    &fid,
+                    &fname,
+                    "text/markdown",
+                    &content,
+                )
+                .await;
+            }
+            Err(e) => bot::emit_log(app, &bot.id, format!("save \"{fname}\": {e}")),
+        }
+    }
+    truncate(&transcript, 6000)
 }
 
 /// Pick the best subfolder for a file (rule-guided model classification), or the

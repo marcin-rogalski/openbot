@@ -35,7 +35,9 @@ it and `reindex` restores it from Drive.
 | **ask** | Semantic Q&A: embeds the question, retrieves the most relevant passages, and returns them cited (`### <name>`) for the model to synthesize an answer from. |
 | **list_sources** | Lists what's currently in the local index. |
 | **list** | Lists files/folders in Drive. |
-| **read** | Reads a file's text (PDF via Google's converter). |
+| **read** | Reads a file's text — by id **or a pasted Drive share link** (PDF via Google's converter). Use to summarize a linked doc without saving it. |
+| **save_link** | Copies a file from a pasted Drive link into the folder and indexes it. |
+| **transcribe_link** | Downloads an audio/video file from a Drive link, transcribes it, and saves a transcript + summary. |
 | **create** / **create_folder** | Creates a file or folder. |
 | **update** / **delete** | Updates a file, or moves it to trash. |
 | **reindex** | Walks the Drive subtree, downloading, parsing, embedding, and indexing every supported file it hasn't already indexed. Emits progress; safe to re-run. |
@@ -44,6 +46,20 @@ it and `reindex` restores it from Drive.
 Typical usage in Discord: *"reindex the knowledge base"* → then ask a cross-file question
 and the bot answers with citations. If the index is empty, `ask` says so and suggests
 reindexing.
+
+### Google Drive links
+
+Paste a Google Drive link and tell the bot what to do with it:
+
+- *"summarize this"* → `read` fetches the doc's text and the bot summarizes it (nothing saved).
+- *"save this to our drive"* → `save_link` copies the file into the tool's folder and indexes it.
+- *"transcribe this"* (audio/video link) → `transcribe_link` downloads it, transcribes, and
+  saves a transcript + summary into the folder.
+
+It recognizes the usual link shapes (`/file/d/<id>`, `/document/d/<id>`, `?id=<id>`,
+`/drive/folders/<id>`). **Access requirement:** the bot reads with *its own* Google account,
+so a link only works if it's shared with that account or set to **"anyone with the link."**
+If it isn't, the bot reports that the link needs sharing.
 
 ### Attachment ingestion
 

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Google Drive links** — paste a Drive link and the bot can read/summarize it (`read` now
+  accepts a link or id), copy it into the tool's folder + index it (`save_link`), or, for an
+  audio/video link, download + transcribe it and save a transcript + summary
+  (`transcribe_link`). Recognizes the common link shapes; the file must be shared with the
+  bot's Google account (or public).
 - **Client-side audio decoding** — posted mp3 / m4a / FLAC / Ogg-Vorbis are decoded to WAV
   inside openbot (pure-Rust `symphonia`, new `audio.rs`) before transcription, so the model
   server needs no extra codecs (no ffmpeg). Opus (Discord voice messages) still needs a

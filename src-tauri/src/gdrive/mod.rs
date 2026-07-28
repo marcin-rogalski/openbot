@@ -324,6 +324,109 @@ async fn read_pdf(
     result
 }
 
+/// Extract a Drive file id from a share URL, or return the input unchanged if it
+/// already looks like a bare id. Handles `/d/<id>`, `/folders/<id>`, and `id=<id>`.
+pub fn file_id_from_link(input: &str) -> String {
+    let s = input.trim();
+    for marker in ["/d/", "/folders/"] {
+        if let Some(rest) = s.split(marker).nth(1) {
+            let id = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+            if !id.is_empty() {
+                return id.to_string();
+            }
+        }
+    }
+    if let Some(pos) = s.find("id=") {
+        let rest = &s[pos + 3..];
+        let id = rest.split(['&', '#']).next().unwrap_or(rest);
+        if !id.is_empty() {
+            return id.to_string();
+        }
+    }
+    s.to_string()
+}
+
+/// Fetch a file's metadata (id, name, mimeType).
+pub async fn file_meta(
+    app: &AppHandle,
+    client_id: &str,
+    client_secret: &str,
+    id: &str,
+) -> Result<DriveFile, String> {
+    let tok = token(app, client_id, client_secret).await?;
+    let resp = reqwest::Client::new()
+        .get(format!("{DRIVE_API}/files/{id}"))
+        .query(&[("fields", "id,name,mimeType,modifiedTime")])
+        .bearer_auth(&tok)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(error_body(resp).await);
+    }
+    resp.json().await.map_err(|e| format!("bad response: {e}"))
+}
+
+/// Server-side copy of a file into `dest_folder`; returns the new file id.
+pub async fn copy_to(
+    app: &AppHandle,
+    client_id: &str,
+    client_secret: &str,
+    id: &str,
+    dest_folder: &str,
+    name: Option<&str>,
+) -> Result<String, String> {
+    let tok = token(app, client_id, client_secret).await?;
+    let mut body = json!({ "parents": [dest_folder] });
+    if let Some(n) = name {
+        body["name"] = json!(n);
+    }
+    let resp = reqwest::Client::new()
+        .post(format!("{DRIVE_API}/files/{id}/copy"))
+        .query(&[("fields", "id")])
+        .bearer_auth(&tok)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(error_body(resp).await);
+    }
+    #[derive(Deserialize)]
+    struct Copied {
+        id: String,
+    }
+    let copied: Copied = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {e}"))?;
+    Ok(copied.id)
+}
+
+/// Download a file's raw bytes (for binary types like audio/video).
+pub async fn download_media(
+    app: &AppHandle,
+    client_id: &str,
+    client_secret: &str,
+    id: &str,
+) -> Result<Vec<u8>, String> {
+    let tok = token(app, client_id, client_secret).await?;
+    let resp = reqwest::Client::new()
+        .get(format!("{DRIVE_API}/files/{id}"))
+        .query(&[("alt", "media")])
+        .bearer_auth(&tok)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(error_body(resp).await);
+    }
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read failed: {e}"))
+}
+
 /// Create a subfolder under `parent` and return its id.
 pub async fn create_folder(
     app: &AppHandle,
@@ -542,5 +645,32 @@ pub fn drive_status(app: AppHandle, tool_id: String) -> bool {
     match global.tool(&tool_id) {
         Some(tool) => auth::has_cached_token(&app, &tool.client_id),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_id_from_link;
+
+    #[test]
+    fn extracts_id_from_link_formats() {
+        assert_eq!(
+            file_id_from_link("https://drive.google.com/file/d/ABC123/view?usp=sharing"),
+            "ABC123"
+        );
+        assert_eq!(
+            file_id_from_link("https://docs.google.com/document/d/DOC_9/edit"),
+            "DOC_9"
+        );
+        assert_eq!(
+            file_id_from_link("https://drive.google.com/open?id=XYZ&foo=1"),
+            "XYZ"
+        );
+        assert_eq!(
+            file_id_from_link("https://drive.google.com/drive/folders/FOLD1"),
+            "FOLD1"
+        );
+        // Bare id passes through unchanged.
+        assert_eq!(file_id_from_link("plainId42"), "plainId42");
     }
 }
