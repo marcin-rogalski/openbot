@@ -543,9 +543,11 @@ impl Handler {
                     None => (bytes, a.filename.clone(), mime.clone()),
                 }
             };
-            let transcript =
-                match model::transcribe(&self.bot, send_bytes, &send_name, &send_mime).await {
-                    Ok(t) => t,
+            let segments =
+                match model::transcribe_segments(&self.bot, send_bytes, &send_name, &send_mime)
+                    .await
+                {
+                    Ok(s) => s,
                     Err(e) => {
                         bot::emit_log(
                             &self.app,
@@ -561,6 +563,8 @@ impl Handler {
                         continue;
                     }
                 };
+            let transcript = model::segments_plain(&segments);
+            let timestamped = model::format_segments(&segments, 0.0);
             let summary = model::summarize_transcript(&self.bot, &transcript)
                 .await
                 .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
@@ -573,7 +577,7 @@ impl Handler {
             let when = msg.timestamp.to_string();
             let transcript_md = format!(
                 "# Transcript — {name}\n\n- Source: Discord, posted by {author}\n- Transcribed: \
-                 {when}\n\n---\n\n{transcript}\n",
+                 {when}\n\n---\n\n{timestamped}\n",
                 name = a.filename,
                 author = msg.author.name,
             );

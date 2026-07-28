@@ -127,12 +127,14 @@ answer so it can act on the audio the same turn. With a **Google Drive** tool en
 files are saved to Drive and indexed into the knowledge base, so you can `ask` about them
 later. Files up to ~25 MB are transcribed.
 
-Compressed audio is **decoded to WAV inside openbot** (pure-Rust `symphonia`) before it's
-sent, so the transcription server needs no extra codecs (no ffmpeg): mp3, m4a/AAC, FLAC,
-and Ogg Vorbis all work against a plain Whisper endpoint. The exception is **Opus** (what
-Discord's built-in *voice messages* use), which symphonia doesn't decode — those still
-require a server that can handle Opus. Live voice channels are unaffected (openbot already
-sends WAV).
+Compressed audio is **decoded to WAV inside openbot** (pure-Rust `symphonia`, plus
+`audiopus` for Opus) before it's sent, so the transcription server needs no extra codecs
+(no ffmpeg): mp3, m4a/AAC, FLAC, Ogg Vorbis, **and Opus** (Discord's built-in *voice
+messages*) all work against a plain Whisper endpoint. Live voice channels are unaffected
+(openbot already sends WAV).
+
+Transcripts are **timestamped** — each line is prefixed with `[MM:SS]` (using the model's
+segment times), so long recordings are easy to navigate.
 
 ### Live voice channels
 

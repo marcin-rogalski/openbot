@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions};
+use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_OPUS};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
@@ -20,10 +20,17 @@ use symphonia::core::probe::Hint;
 /// Default per-chunk length when splitting long audio for transcription.
 pub const CHUNK_SECS: u32 = 300;
 
-/// An opened decoder bound to a media source's default (audio) track.
+/// The decoder for the chosen audio track — symphonia for most codecs, or
+/// audiopus for Opus (which symphonia demuxes but can't decode).
+enum Dec {
+    Symphonia(Box<dyn Decoder>),
+    Opus(audiopus::coder::Decoder),
+}
+
+/// An opened decoder bound to a media source's audio track.
 struct Reader {
     format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
+    dec: Dec,
     track_id: u32,
     sample_rate: u32,
     channels: usize,
@@ -52,29 +59,55 @@ fn open(source: Box<dyn MediaSource>, filename: &str, mime: &str) -> Option<Read
     // Pick the first track we can build an *audio* decoder for. In video files
     // the default/first track is the video stream (no audio decoder), so trying
     // to make a decoder is the reliable way to find the audio track.
+    // Prefer a track we can build a symphonia decoder for (in video files the
+    // default track is the video stream); fall back to an Opus track (audiopus).
     let codecs = symphonia::default::get_codecs();
+    let mut opus_track: Option<u32> = None;
     for track in format.tracks() {
-        let Some(sample_rate) = track.codec_params.sample_rate else {
-            continue; // not an audio track
-        };
-        let Ok(decoder) = codecs.make(&track.codec_params, &DecoderOptions::default()) else {
-            continue; // no decoder for this codec (e.g. H.264 video)
-        };
-        let channels = track
-            .codec_params
-            .channels
-            .map(|c| c.count())
-            .unwrap_or(1)
-            .max(1);
+        let cp = &track.codec_params;
+        if let Some(sample_rate) = cp.sample_rate {
+            if let Ok(decoder) = codecs.make(cp, &DecoderOptions::default()) {
+                let channels = cp.channels.map(|c| c.count()).unwrap_or(1).max(1);
+                return Some(Reader {
+                    track_id: track.id,
+                    sample_rate,
+                    channels,
+                    dec: Dec::Symphonia(decoder),
+                    format,
+                });
+            }
+        }
+        if cp.codec == CODEC_TYPE_OPUS && opus_track.is_none() {
+            opus_track = Some(track.id);
+        }
+    }
+    if let Some(track_id) = opus_track {
+        let decoder = audiopus::coder::Decoder::new(
+            audiopus::SampleRate::Hz48000,
+            audiopus::Channels::Stereo,
+        )
+        .ok()?;
         return Some(Reader {
-            track_id: track.id,
-            sample_rate,
-            channels,
-            decoder,
+            track_id,
+            sample_rate: 48_000, // Opus always decodes to 48 kHz
+            channels: 2,
+            dec: Dec::Opus(decoder),
             format,
         });
     }
     None
+}
+
+/// Average interleaved n-channel samples into mono and append to `mono`.
+fn append_downmix(samples: &[i16], channels: usize, mono: &mut Vec<i16>) {
+    if channels <= 1 {
+        mono.extend_from_slice(samples);
+    } else {
+        for frame in samples.chunks(channels) {
+            let sum: i32 = frame.iter().map(|&s| s as i32).sum();
+            mono.push((sum / channels as i32) as i16);
+        }
+    }
 }
 
 /// Decode the next packet, appending its samples (downmixed to mono) to `mono`.
@@ -88,31 +121,47 @@ fn next_mono(r: &mut Reader, buf: &mut Option<SampleBuffer<i16>>, mono: &mut Vec
         if packet.track_id() != r.track_id {
             continue;
         }
-        let decoded = match r.decoder.decode(&packet) {
-            Ok(d) => d,
-            Err(SymphoniaError::DecodeError(_)) => continue, // recoverable, skip frame
-            Err(_) => return false,
-        };
-        if buf.is_none() {
-            *buf = Some(SampleBuffer::<i16>::new(
-                decoded.capacity() as u64,
-                *decoded.spec(),
-            ));
-        }
-        let Some(sb) = buf.as_mut() else {
-            return false;
-        };
-        sb.copy_interleaved_ref(decoded);
-        let samples = sb.samples();
-        if r.channels <= 1 {
-            mono.extend_from_slice(samples);
-        } else {
-            for frame in samples.chunks(r.channels) {
-                let sum: i32 = frame.iter().map(|&s| s as i32).sum();
-                mono.push((sum / r.channels as i32) as i16);
+        match &mut r.dec {
+            Dec::Symphonia(decoder) => {
+                let decoded = match decoder.decode(&packet) {
+                    Ok(d) => d,
+                    Err(SymphoniaError::DecodeError(_)) => continue, // recoverable
+                    Err(_) => return false,
+                };
+                if buf.is_none() {
+                    *buf = Some(SampleBuffer::<i16>::new(
+                        decoded.capacity() as u64,
+                        *decoded.spec(),
+                    ));
+                }
+                let Some(sb) = buf.as_mut() else {
+                    return false;
+                };
+                sb.copy_interleaved_ref(decoded);
+                append_downmix(sb.samples(), r.channels, mono);
+                return true;
+            }
+            Dec::Opus(decoder) => {
+                // Each ogg packet is one Opus frame; skip the header packets
+                // (OpusHead/OpusTags) and anything that fails to decode.
+                let Ok(pkt) = audiopus::packet::Packet::try_from(&packet.data[..]) else {
+                    continue;
+                };
+                // Max Opus frame is 120 ms → 5760 samples/channel (stereo here).
+                let mut out = [0i16; 5760 * 2];
+                let Ok(signals) = audiopus::MutSignals::try_from(&mut out[..]) else {
+                    return false;
+                };
+                match decoder.decode(Some(pkt), signals, false) {
+                    Ok(frames) => {
+                        let total = (frames * 2).min(out.len());
+                        append_downmix(&out[..total], 2, mono);
+                        return true;
+                    }
+                    Err(_) => continue,
+                }
             }
         }
-        return true;
     }
 }
 

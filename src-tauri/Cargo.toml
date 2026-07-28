@@ -54,6 +54,10 @@ pdf-extract = "0.7"
 # posted audio to WAV before transcription, independent of the model server's
 # codec support — see audio.rs.
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac"] }
+# Opus decoding (Discord voice messages are ogg/opus, which symphonia demuxes
+# but can't decode). Pinned to the version songbird already resolves, to reuse
+# the same native build.
+audiopus = "=0.3.0-rc.0"
 
 # macOS: intercept the Quit AppleEvent the OS fires once the window is hidden,
 # so the app keeps running from the tray (see macos.rs).

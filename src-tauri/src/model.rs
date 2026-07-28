@@ -324,16 +324,31 @@ const MAX_SUMMARY_INPUT_CHARS: usize = 12_000;
 struct TranscriptionResponse {
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    segments: Vec<RespSegment>,
 }
 
-/// Transcribe an audio clip via the OpenAI-compatible `/audio/transcriptions`
-/// endpoint on the bot's model server (Whisper-style). Returns the transcript.
-pub async fn transcribe(
+#[derive(Deserialize)]
+struct RespSegment {
+    #[serde(default)]
+    start: f64,
+    #[serde(default)]
+    text: String,
+}
+
+/// A timestamped transcript segment: `start` seconds into the clip + its text.
+pub struct Segment {
+    pub start: f64,
+    pub text: String,
+}
+
+/// POST an audio clip to the OpenAI-compatible `/audio/transcriptions` endpoint.
+async fn transcribe_raw(
     cfg: &BotConfig,
     bytes: Vec<u8>,
     filename: &str,
     mime: &str,
-) -> Result<String, String> {
+) -> Result<TranscriptionResponse, String> {
     let url = format!(
         "{}/audio/transcriptions",
         cfg.model.base_url.trim_end_matches('/')
@@ -349,6 +364,7 @@ pub async fn transcribe(
         .map_err(|e| format!("bad audio mime: {e}"))?;
     let form = reqwest::multipart::Form::new()
         .text("model", cfg.model.transcription_model.clone())
+        .text("response_format", "verbose_json")
         .part("file", part);
 
     let mut req = reqwest::Client::new()
@@ -371,16 +387,72 @@ pub async fn transcribe(
             detail.trim()
         ));
     }
+    resp.json().await.map_err(|e| format!("bad response: {e}"))
+}
 
-    let parsed: TranscriptionResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("bad response: {e}"))?;
-    let text = parsed.text.trim().to_string();
+/// Transcribe an audio clip; returns the plain transcript text.
+pub async fn transcribe(
+    cfg: &BotConfig,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+) -> Result<String, String> {
+    let text = transcribe_raw(cfg, bytes, filename, mime).await?.text;
+    let text = text.trim().to_string();
     if text.is_empty() {
         return Err("empty transcription".to_string());
     }
     Ok(text)
+}
+
+/// Transcribe an audio clip; returns timestamped segments (falls back to a single
+/// segment at 0 s if the server didn't return any).
+pub async fn transcribe_segments(
+    cfg: &BotConfig,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+) -> Result<Vec<Segment>, String> {
+    let parsed = transcribe_raw(cfg, bytes, filename, mime).await?;
+    let segments: Vec<Segment> = parsed
+        .segments
+        .into_iter()
+        .filter(|s| !s.text.trim().is_empty())
+        .map(|s| Segment {
+            start: s.start,
+            text: s.text.trim().to_string(),
+        })
+        .collect();
+    if !segments.is_empty() {
+        return Ok(segments);
+    }
+    let text = parsed.text.trim().to_string();
+    if text.is_empty() {
+        return Err("empty transcription".to_string());
+    }
+    Ok(vec![Segment { start: 0.0, text }])
+}
+
+/// Render segments as a `[MM:SS] text` transcript. `offset_secs` shifts every
+/// timestamp (used when transcribing a long file chunk by chunk).
+pub fn format_segments(segments: &[Segment], offset_secs: f64) -> String {
+    segments
+        .iter()
+        .map(|s| {
+            let t = (s.start + offset_secs).max(0.0) as u64;
+            format!("[{:02}:{:02}] {}", t / 60, t % 60, s.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Join segment texts into a plain transcript (for summaries / inline context).
+pub fn segments_plain(segments: &[Segment]) -> String {
+    segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Summarise a transcript into concise Markdown (overview + key points + action

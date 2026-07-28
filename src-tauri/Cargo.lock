@@ -2889,6 +2889,7 @@ dependencies = [
 name = "openbot"
 version = "0.1.0"
 dependencies = [
+ "audiopus",
  "futures-util",
  "objc2",
  "objc2-core-services",

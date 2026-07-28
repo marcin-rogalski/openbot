@@ -16,6 +16,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Timestamped transcripts** — transcripts now prefix each line with `[MM:SS]` (from the
+  model's segment times; offset per chunk for long files), so meeting/conference recordings
+  are navigable. Applies to posted audio and Drive-link transcription.
+- **Opus decoding** — Discord's built-in voice messages (ogg/opus) now transcribe, decoded
+  in-process via `audiopus` (no ffmpeg) — completing the client-side codec set
+  (mp3/m4a/flac/ogg-vorbis/opus + mp4/mov video).
 - **More visible progress on Discord** — the live status message now shows what the bot is
   doing *while* a tool runs (present-tense labels like "🎙️ Transcribing… ", "🔎 Searching
   the web…"), streams real progress for long operations (transcription: downloading →
@@ -32,8 +38,8 @@ All notable changes to this project are documented here. The format is based on
   track of **video** files) work with bounded memory (up to ~2 GB).
 - **Client-side audio decoding** — posted mp3 / m4a / FLAC / Ogg-Vorbis are decoded to WAV
   inside openbot (pure-Rust `symphonia`, new `audio.rs`) before transcription, so the model
-  server needs no extra codecs (no ffmpeg). Opus (Discord voice messages) still needs a
-  server that decodes it. Shared `pcm_to_wav` with the live-voice path.
+  server needs no extra codecs (no ffmpeg). Shared `pcm_to_wav` with the live-voice path.
+  (Opus support added later — see above.)
 
 - **Audio transcription** — audio attachments are transcribed via the model server's
   `/audio/transcriptions` endpoint (new **Transcription model** setting); the bot posts a

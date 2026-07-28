@@ -1088,8 +1088,10 @@ async fn transcribe_link(
     let _ = std::fs::remove_file(&src); // no longer needed once split
 
     let n = chunks.len();
-    let mut transcript = String::new();
+    let mut plain = String::new();
+    let mut timestamped = String::new();
     for (i, chunk) in chunks.iter().enumerate() {
+        let offset = f64::from(i as u32 * crate::audio::CHUNK_SECS);
         bot::emit_log(
             app,
             &bot.id,
@@ -1104,12 +1106,16 @@ async fn transcribe_link(
         let Ok(bytes) = std::fs::read(chunk) else {
             continue;
         };
-        match model::transcribe(bot, bytes, "chunk.wav", "audio/wav").await {
-            Ok(t) if !t.trim().is_empty() => {
-                if !transcript.is_empty() {
-                    transcript.push(' ');
+        match model::transcribe_segments(bot, bytes, "chunk.wav", "audio/wav").await {
+            Ok(segs) if !segs.is_empty() => {
+                if !plain.is_empty() {
+                    plain.push(' ');
                 }
-                transcript.push_str(t.trim());
+                plain.push_str(&model::segments_plain(&segs));
+                if !timestamped.is_empty() {
+                    timestamped.push('\n');
+                }
+                timestamped.push_str(&model::format_segments(&segs, offset));
             }
             Ok(_) => {}
             Err(e) => bot::emit_log(
@@ -1122,14 +1128,14 @@ async fn transcribe_link(
     }
     let _ = std::fs::remove_dir_all(&work);
 
-    if transcript.trim().is_empty() {
+    if plain.trim().is_empty() {
         return "error: transcription produced no text".to_string();
     }
     if truncated {
-        transcript.push_str("\n\n[transcript truncated — recording exceeded the length cap]");
+        timestamped.push_str("\n\n[transcript truncated — recording exceeded the length cap]");
     }
 
-    let summary = model::summarize_transcript(bot, &transcript)
+    let summary = model::summarize_transcript(bot, &plain)
         .await
         .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
 
@@ -1140,7 +1146,7 @@ async fn transcribe_link(
         .unwrap_or(&meta.name);
     let transcript_md = format!(
         "# Transcript — {}\n\n- Source: Google Drive link\n\n---\n\n{}\n",
-        meta.name, transcript
+        meta.name, timestamped
     );
     let summary_md = format!("# Summary — {}\n\n{}\n", meta.name, summary);
 
@@ -1164,7 +1170,7 @@ async fn transcribe_link(
             Err(e) => bot::emit_log(app, &bot.id, format!("save \"{fname}\": {e}")),
         }
     }
-    truncate(&transcript, 6000)
+    truncate(&plain, 6000)
 }
 
 /// Pick the best subfolder for a file (rule-guided model classification), or the
