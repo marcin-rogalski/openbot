@@ -41,6 +41,9 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 # Stream combinators for parsing the model server's SSE token stream.
 futures-util = "0.3"
+# async fn in traits for the application ports (object-safe) — kept a direct dep
+# so the application layer never imports serenity's re-export.
+async-trait = "0.1"
 yup-oauth2 = "12.1.2"
 open = "5"
 # Tiny localhost control API (list/start/stop bots) — see api.rs.

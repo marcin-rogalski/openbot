@@ -1,6 +1,13 @@
 // Prevents an additional console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Hexagonal layers (migration in progress — see docs/hexagonal.md). The legacy
+// top-level modules below are being ported into these incrementally.
+mod application;
+mod compose;
+mod domain;
+mod infrastructure;
+
 mod api;
 mod audio;
 mod bot;
@@ -27,6 +34,8 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(bot::BotManager::new())
         .setup(|app| {
+            // Shared infrastructure first (HTTP client, later logger/fs).
+            compose::shared::compose_shared();
             #[cfg(target_os = "macos")]
             macos::intercept_quit_apple_event();
             // Migrate the old single config into { global, bots } if needed, so
