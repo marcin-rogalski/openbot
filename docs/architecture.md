@@ -104,7 +104,13 @@ event subscriptions live in `src/lib/bot.ts`; config types mirror the backend in
 ## Planned architecture alignment
 
 The code today is layered but tangled (orchestration modules call concrete infrastructure
-directly). The agreed target — being migrated incrementally, tests first:
+directly). The agreed target — a **core + tool-plugin** architecture — is specified in the
+[Architecture Decision Records](adr/README.md): the ports/adapters split and the `Tool` plugin
+model ([ADR-0001](adr/0001-tool-plugin-architecture.md)), the `Host` tool SDK
+([ADR-0002](adr/0002-host-tool-sdk.md)), the prompt/results/event-bus mechanisms
+([ADR-0003](adr/0003-prompt-results-events.md)), async jobs + proactive turns
+([ADR-0004](adr/0004-async-jobs-and-proactive-turns.md)), and config layering
+([ADR-0005](adr/0005-config-layering.md)). Being migrated incrementally, tests first:
 
 **Rust → hexagonal (ports & adapters):**
 `domain/` (pure types + rules, no IO) · `ports/` (traits: `ChatModel`, `Embedder`,

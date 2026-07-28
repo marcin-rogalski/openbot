@@ -62,6 +62,7 @@ embeddings) built from files that live in Drive. See
 - **[Architecture](docs/architecture.md)** — how it's built, for contributors
 - **[Releasing](docs/releasing.md)** — tagging, multi-platform builds, Homebrew
 - **[Contributing](docs/contributing.md)** — dev setup and how to extend it
+- **[Architecture decisions](docs/adr/README.md)** — ADRs for the target core + tool-plugin design
 
 ## License
 

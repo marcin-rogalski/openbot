@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Docs
+
+- **Architecture Decision Records** (`docs/adr/`) — the agreed target "core + tool-plugin"
+  architecture: ports/adapters + a `Tool` plugin registry, the `Host` tool SDK, the
+  prompt/results/event-bus mechanisms, async jobs + proactive turns, and config layering.
+  Design only; migration is incremental and test-guarded.
+
 ### Fixed
 
 - **Duplicate message handling** — starting a bot claimed its run-slot non-atomically, so two
