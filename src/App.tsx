@@ -10,9 +10,9 @@ import {
   startBot,
   stopBot,
   useActivityFeeds,
+  useBusyLabels,
   useMetricsByBot,
   useRunningBots,
-  useThinkingBots,
   useToolApprovals,
 } from "./lib/bot"
 import {
@@ -35,7 +35,7 @@ function App() {
   const [verbose, setVerbose] = useState(false)
 
   const runningIds = useRunningBots()
-  const thinkingIds = useThinkingBots()
+  const busyLabels = useBusyLabels()
   const feeds = useActivityFeeds()
   const metrics = useMetricsByBot()
   const [approvals, resolveApproval] = useToolApprovals()
@@ -114,7 +114,7 @@ function App() {
                 global={globalCfg}
                 events={feeds.get(selectedBot.id) ?? []}
                 running={runningIds.has(selectedBot.id)}
-                thinking={thinkingIds.has(selectedBot.id)}
+                busy={busyLabels.get(selectedBot.id)}
                 metrics={metrics.get(selectedBot.id)}
                 verbose={verbose}
                 onVerboseChange={setVerbose}

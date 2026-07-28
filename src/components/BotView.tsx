@@ -42,7 +42,7 @@ export function BotView({
   global,
   events,
   running,
-  thinking,
+  busy,
   metrics,
   verbose,
   onVerboseChange,
@@ -53,7 +53,7 @@ export function BotView({
   global: GlobalConfig
   events: ActivityEvent[]
   running: boolean
-  thinking: boolean
+  busy?: string | null
   metrics?: MetricsData
   verbose: boolean
   onVerboseChange: (verbose: boolean) => void
@@ -446,7 +446,7 @@ export function BotView({
       </Flex>
 
       {tab === "chat" ? (
-        <StatusBar running={running} thinking={thinking} metrics={metrics} />
+        <StatusBar running={running} busy={busy} metrics={metrics} />
       ) : (
         <ActionBar
           dirty={dirty}

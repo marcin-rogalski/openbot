@@ -198,7 +198,7 @@ impl Handler {
             humanize(&msg.content, &msg.mentions, bot_id, bot_name),
         );
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
-        bot::emit_thinking(&self.app, &self.bot_id, true);
+        bot::emit_busy(&self.app, &self.bot_id, Some("💭 Thinking…"));
         // Live progress message in the channel — edited as the bot works and
         // finally rewritten into the answer.
         let mut status = msg.channel_id.say(&ctx.http, "💭 Thinking…").await.ok();
@@ -217,7 +217,7 @@ impl Handler {
 
         for iter in 0..MAX_TOOL_ITERS {
             if iter > 0 {
-                set_status(ctx, &mut status, "💭 Thinking…").await;
+                self.set_status(ctx, &mut status, "💭 Thinking…").await;
             }
             // Live "thinking" entry the UI fills in as tokens stream, so a loop
             // is visible.
@@ -307,7 +307,7 @@ impl Handler {
                 break;
             }
         }
-        bot::emit_thinking(&self.app, &self.bot_id, false);
+        bot::emit_busy(&self.app, &self.bot_id, None);
         self.refresh_window(msg);
     }
 
@@ -336,7 +336,8 @@ impl Handler {
                 return "denied by policy".to_string();
             }
             Policy::Ask => {
-                set_status(ctx, status, "⏳ Waiting for your approval…").await;
+                self.set_status(ctx, status, "⏳ Waiting for your approval…")
+                    .await;
                 match bot::request_approval(&self.app, &self.bot_id, name, &call.args).await {
                     Decision::Approve => true,
                     Decision::Deny => false,
@@ -365,7 +366,8 @@ impl Handler {
         }
 
         // Show what the bot is doing while the tool runs (before any progress).
-        set_status(ctx, status, &tool.active_label(&call.args)).await;
+        self.set_status(ctx, status, &tool.active_label(&call.args))
+            .await;
 
         let result = if tool.is_backfill() {
             self.backfill(ctx, channel_id, tool, &call.args).await
@@ -381,7 +383,7 @@ impl Handler {
                     r = &mut exec => break r,
                     Some(update) = rx.recv() => {
                         if last_edit.elapsed() >= Duration::from_millis(1500) {
-                            set_status(ctx, status, &update).await;
+                            self.set_status(ctx, status, &update).await;
                             last_edit = Instant::now();
                         }
                     }
@@ -394,7 +396,7 @@ impl Handler {
             }
         }
         let summary = tool.summary(&call.args, &result);
-        set_status(ctx, status, &summary).await;
+        self.set_status(ctx, status, &summary).await;
         bot::emit_tool_activity(
             &self.app,
             &self.bot_id,
@@ -402,6 +404,22 @@ impl Handler {
             summary,
         );
         result
+    }
+
+    /// Update the live progress message in the channel (no-op if it wasn't
+    /// posted) and mirror the same label to the app status bar, so the desktop
+    /// UI shows what the bot is doing (e.g. "🔎 Searching the web…") rather than
+    /// a bare "working" flag.
+    async fn set_status(&self, ctx: &Context, status: &mut Option<Message>, text: &str) {
+        bot::emit_busy(&self.app, &self.bot_id, Some(text));
+        if let Some(m) = status.as_mut() {
+            let _ = m
+                .edit(
+                    &ctx.http,
+                    EditMessage::new().content(truncate(text, DISCORD_MAX)),
+                )
+                .await;
+        }
     }
 
     /// Run a Drive-link transcription as a background job: post live progress to
@@ -585,7 +603,7 @@ impl Handler {
             return out;
         }
 
-        bot::emit_thinking(&self.app, &self.bot_id, true);
+        bot::emit_busy(&self.app, &self.bot_id, Some("🎙️ Transcribing…"));
         let drive_sink = self
             .sinks
             .iter()
@@ -626,7 +644,7 @@ impl Handler {
                         &self.bot_id,
                         format!("audio \"{}\": download failed: {e}", a.filename),
                     );
-                    set_status(
+                    self.set_status(
                         ctx,
                         &mut note,
                         &format!("🎙️ Couldn't fetch \"{}\": {e}", a.filename),
@@ -666,7 +684,7 @@ impl Handler {
                             &self.bot_id,
                             format!("audio \"{}\": transcription failed: {e}", a.filename),
                         );
-                        set_status(
+                        self.set_status(
                             ctx,
                             &mut note,
                             &format!("🎙️ Couldn't transcribe \"{}\": {e}", a.filename),
@@ -766,7 +784,7 @@ impl Handler {
             ));
         }
 
-        bot::emit_thinking(&self.app, &self.bot_id, false);
+        bot::emit_busy(&self.app, &self.bot_id, None);
         out
     }
 
@@ -924,10 +942,14 @@ impl Handler {
         let _ = text_channel
             .say(&ctx.http, "🎙️ Wrapping up — preparing the transcript…")
             .await;
-        bot::emit_thinking(&self.app, &self.bot_id, true);
+        bot::emit_busy(
+            &self.app,
+            &self.bot_id,
+            Some("🎙️ Wrapping up — preparing the transcript…"),
+        );
 
         let Some(rendered) = meeting.render().await else {
-            bot::emit_thinking(&self.app, &self.bot_id, false);
+            bot::emit_busy(&self.app, &self.bot_id, None);
             let _ = text_channel
                 .say(&ctx.http, "I didn't capture any speech to transcribe.")
                 .await;
@@ -1003,7 +1025,7 @@ impl Handler {
             )
             .await;
         }
-        bot::emit_thinking(&self.app, &self.bot_id, false);
+        bot::emit_busy(&self.app, &self.bot_id, None);
     }
 
     fn build_messages(
@@ -1325,18 +1347,6 @@ fn truncate(text: &str, max_chars: usize) -> String {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or("").trim()
-}
-
-/// Edit the live progress message in the channel (no-op if it wasn't posted).
-async fn set_status(ctx: &Context, status: &mut Option<Message>, text: &str) {
-    if let Some(m) = status.as_mut() {
-        let _ = m
-            .edit(
-                &ctx.http,
-                EditMessage::new().content(truncate(text, DISCORD_MAX)),
-            )
-            .await;
-    }
 }
 
 /// Split a reply into Discord-sized messages, breaking on paragraph/line/word

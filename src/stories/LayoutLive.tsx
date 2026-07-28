@@ -150,7 +150,6 @@ export function LayoutLive() {
             global={global}
             events={events}
             running={selected.id === bots[0].id}
-            thinking={false}
             metrics={{ prefillTps: null, inferenceTps: 42 }}
             verbose={verbose}
             onVerboseChange={setVerbose}

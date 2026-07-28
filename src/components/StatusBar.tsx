@@ -9,18 +9,19 @@ function fmtTps(value: number | null | undefined, running: boolean): string {
 
 export function StatusBar({
   running,
-  thinking,
+  busy,
   metrics,
 }: {
   running: boolean
-  thinking?: boolean
+  /** Live activity label while the bot works (inference or a tool); absent = idle. */
+  busy?: string | null
   metrics?: MetricsData
 }) {
   return (
     <FooterBar className="status-bar">
-      {thinking ? (
+      {running && busy ? (
         <Text>
-          Thinking
+          {busy.replace(/[….]+$/, "")}
           <span className="dots">
             <span />
             <span />
@@ -28,7 +29,7 @@ export function StatusBar({
           </span>
         </Text>
       ) : (
-        <Text>{running ? "Running" : "Stopped"}</Text>
+        <Text>{running ? "Idle" : "Stopped"}</Text>
       )}
       <Flex align="center" gap="4">
         <Text>

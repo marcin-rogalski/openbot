@@ -26,8 +26,10 @@ pub const ACTIVITY_EVENT: &str = "bot://activity";
 /// Live token stream for an in-progress model call: `{ botId, id, content }` —
 /// the UI replaces the matching activity entry's content as it grows.
 pub const STREAM_EVENT: &str = "bot://stream";
-/// Whether a bot is actively working on a reply: `{ botId, thinking }`.
-pub const THINKING_EVENT: &str = "bot://thinking";
+/// The bot's live activity label for the status bar: `{ botId, label }`, where
+/// `label` is a short string while it works (inference or a tool) and `null`
+/// when it goes idle.
+pub const BUSY_EVENT: &str = "bot://busy";
 /// Throughput numbers for the status bar (carries `botId`).
 pub const METRICS_EVENT: &str = "bot://metrics";
 /// Tool-approval request: `{ id, botId, tool, args }`.
@@ -298,12 +300,11 @@ pub fn stream_update(app: &AppHandle, bot_id: &str, id: &str, content: &str) {
     );
 }
 
-/// Mark a bot as actively working (or done), for the status bar.
-pub fn emit_thinking(app: &AppHandle, bot_id: &str, thinking: bool) {
-    let _ = app.emit(
-        THINKING_EVENT,
-        json!({ "botId": bot_id, "thinking": thinking }),
-    );
+/// Set the bot's live activity label for the status bar: `Some(label)` while it
+/// works (inference or a tool — e.g. "Searching the web…", "Transcribing 20%"),
+/// `None` when it goes idle.
+pub fn emit_busy(app: &AppHandle, bot_id: &str, label: Option<&str>) {
+    let _ = app.emit(BUSY_EVENT, json!({ "botId": bot_id, "label": label }));
 }
 
 /// A tool-call activity carrying both the raw detail (`content`, shown in

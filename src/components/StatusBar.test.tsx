@@ -6,7 +6,7 @@ import { Provider } from "./ui/provider"
 
 function renderSB(props: {
   running: boolean
-  thinking?: boolean
+  busy?: string | null
   metrics?: MetricsData
 }) {
   return render(
@@ -17,15 +17,20 @@ function renderSB(props: {
 }
 
 describe("StatusBar", () => {
-  it("shows Thinking when thinking", () => {
-    renderSB({ running: true, thinking: true })
-    expect(screen.getByText("Thinking")).toBeInTheDocument()
-    expect(screen.queryByText("Running")).not.toBeInTheDocument()
+  it("shows the busy label (sans trailing ellipsis) when busy", () => {
+    renderSB({ running: true, busy: "🔎 Searching the web…" })
+    expect(screen.getByText("🔎 Searching the web")).toBeInTheDocument()
+    expect(screen.queryByText("Idle")).not.toBeInTheDocument()
   })
 
-  it("shows Running when running and not thinking", () => {
+  it("shows Idle when running and not busy", () => {
     renderSB({ running: true })
-    expect(screen.getByText("Running")).toBeInTheDocument()
+    expect(screen.getByText("Idle")).toBeInTheDocument()
+  })
+
+  it("ignores a busy label when not running", () => {
+    renderSB({ running: false, busy: "🔎 Searching the web…" })
+    expect(screen.getByText("Stopped")).toBeInTheDocument()
   })
 
   it("shows Stopped when not running", () => {
