@@ -23,7 +23,6 @@ mod model;
 mod tools;
 mod tray;
 mod voice;
-mod websearch;
 mod window;
 
 use tauri::Manager;

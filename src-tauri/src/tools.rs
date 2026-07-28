@@ -17,7 +17,7 @@ use tauri::AppHandle;
 use crate::config::{self, BotConfig, GlobalConfig};
 use crate::gdrive::{self, DriveFile};
 use crate::knowledge::{self, SourceMeta};
-use crate::{bot, ingest, memory, model, websearch};
+use crate::{bot, ingest, memory, model};
 
 /// Fixed instance id for the per-bot memory tools.
 const MEMORY_INSTANCE: &str = "memory";
@@ -713,14 +713,18 @@ pub async fn execute(
             }
         }
         ToolKind::Web { op, api_key } => match op {
-            WebOp::Search => match websearch::search(api_key, &arg("query")).await {
-                Ok(results) => results,
-                Err(e) => format!("error: {e}"),
-            },
-            WebOp::Fetch => match websearch::fetch(api_key, &arg("url")).await {
-                Ok(content) => content,
-                Err(e) => format!("error: {e}"),
-            },
+            WebOp::Search => {
+                match crate::infrastructure::driving::web::search(api_key, &arg("query")).await {
+                    Ok(results) => results,
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+            WebOp::Fetch => {
+                match crate::infrastructure::driving::web::fetch(api_key, &arg("url")).await {
+                    Ok(content) => content,
+                    Err(e) => format!("error: {e}"),
+                }
+            }
         },
         ToolKind::Memory { op } => match op {
             MemoryOp::Save => memory::save(app, bot_id, &arg("kind"), &arg("text")).await,
