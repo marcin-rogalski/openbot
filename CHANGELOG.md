@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Duplicate message handling** — starting a bot claimed its run-slot non-atomically, so two
+  near-simultaneous starts (double-click, or the UI + control API) could each spawn a gateway
+  client for the same bot; the second overwrote the first's handle, leaking a client that then
+  processed every message a second time. Starts now claim the slot atomically, and each client
+  carries an epoch so a superseded (or stopped) client ignores messages during any overlap.
+
 ### Added
 
 - **More visible progress on Discord** — the live status message now shows what the bot is

@@ -66,6 +66,9 @@ struct ChannelMemory {
 struct Handler {
     app: AppHandle,
     bot_id: String,
+    /// This client instance's epoch; if it's no longer the current epoch for the
+    /// bot, a superseding client has taken over and we ignore messages.
+    epoch: u64,
     bot: BotConfig,
     catalog: Vec<ResolvedTool>,
     /// Tools subscribed to the attachment gate (resolved once at start).
@@ -77,12 +80,19 @@ struct Handler {
 }
 
 impl Handler {
-    fn new(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalConfig) -> Self {
+    fn new(
+        app: AppHandle,
+        bot_id: String,
+        epoch: u64,
+        bot: BotConfig,
+        global: GlobalConfig,
+    ) -> Self {
         let catalog = tools::catalog(&global, &bot);
         let sinks = tools::attachment_sinks(&global, &bot);
         Self {
             app,
             bot_id,
+            epoch,
             bot,
             catalog,
             sinks,
@@ -956,6 +966,12 @@ impl EventHandler for Handler {
         if msg.author.bot {
             return;
         }
+        // Ignore messages if a newer client has superseded this one (or the bot
+        // was stopped) — guarantees a single client processes each message even
+        // during a stop/start overlap.
+        if bot::current_epoch(&self.app, &self.bot_id) != Some(self.epoch) {
+            return;
+        }
         let (bot_user_id, bot_user_name) = {
             let me = ctx.cache.current_user();
             (me.id, me.name.clone())
@@ -1108,14 +1124,14 @@ fn voice_command(content: &str) -> Option<VoiceCmd> {
 
 /// Supervisor: build and run one bot's client until it stops, then mark it
 /// stopped so the UI updates.
-pub async fn run(app: AppHandle, bot_id: String, bot: BotConfig, global: GlobalConfig) {
+pub async fn run(app: AppHandle, bot_id: String, epoch: u64, bot: BotConfig, global: GlobalConfig) {
     bot::emit_log(&app, &bot_id, "Connecting to Discord…");
     let intents = GatewayIntents::non_privileged()
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::DIRECT_MESSAGES;
 
     let token = bot.discord_token.clone();
-    let handler = Handler::new(app.clone(), bot_id.clone(), bot, global);
+    let handler = Handler::new(app.clone(), bot_id.clone(), epoch, bot, global);
     // Decode received voice to PCM so we can transcribe it (voice.rs).
     let songbird_config = songbird::Config::default().decode_mode(DecodeMode::Decode);
     let mut client = match Client::builder(&token, intents)

@@ -91,6 +91,10 @@ struct MetricsEvent<'a> {
 /// Per-running-bot handles used to shut it down.
 #[derive(Default)]
 struct BotRuntime {
+    /// Identifies this specific client instance; the gateway handler ignores
+    /// messages once it's no longer the current epoch for its bot (so a
+    /// still-disconnecting old client can't double-process).
+    epoch: u64,
     shard_manager: Option<Arc<ShardManager>>,
     task: Option<JoinHandle<()>>,
 }
@@ -141,11 +145,12 @@ pub enum Decision {
 
 // --- Lifecycle --------------------------------------------------------------
 
+/// Monotonic id for each started client, so a superseded client can tell it's
+/// no longer the active one for its bot.
+static EPOCH: AtomicU64 = AtomicU64::new(1);
+
 pub fn start(app: &AppHandle, bot_id: &str) {
     let manager = app.state::<BotManager>();
-    if manager.inner.lock().unwrap().bots.contains_key(bot_id) {
-        return;
-    }
 
     let Some(bot) = config::load_bot(app, bot_id) else {
         emit_log(app, bot_id, "Bot config not found.");
@@ -161,12 +166,22 @@ pub fn start(app: &AppHandle, bot_id: &str) {
     }
     let global = config::load_global(app);
 
-    manager
-        .inner
-        .lock()
-        .unwrap()
-        .bots
-        .insert(bot_id.to_string(), BotRuntime::default());
+    // Atomically claim the running slot: check + insert under one lock, so two
+    // near-simultaneous starts can't each spawn a client for the same bot.
+    let epoch = EPOCH.fetch_add(1, Ordering::Relaxed);
+    {
+        let mut inner = manager.inner.lock().unwrap();
+        if inner.bots.contains_key(bot_id) {
+            return; // already running
+        }
+        inner.bots.insert(
+            bot_id.to_string(),
+            BotRuntime {
+                epoch,
+                ..Default::default()
+            },
+        );
+    }
     let _ = app.emit(
         STATUS_EVENT,
         StatusEvent {
@@ -178,7 +193,7 @@ pub fn start(app: &AppHandle, bot_id: &str) {
     let app_for_task = app.clone();
     let id = bot_id.to_string();
     let task = tauri::async_runtime::spawn(async move {
-        crate::discord::run(app_for_task, id, bot, global).await;
+        crate::discord::run(app_for_task, id, epoch, bot, global).await;
     });
     {
         let mut inner = manager.inner.lock().unwrap();
@@ -186,6 +201,19 @@ pub fn start(app: &AppHandle, bot_id: &str) {
             runtime.task = Some(task);
         }
     }
+}
+
+/// The epoch of the currently-running client for `bot_id`, or `None` if it isn't
+/// running. A gateway handler compares this to its own epoch to see if it's still
+/// the active client.
+pub fn current_epoch(app: &AppHandle, bot_id: &str) -> Option<u64> {
+    app.state::<BotManager>()
+        .inner
+        .lock()
+        .unwrap()
+        .bots
+        .get(bot_id)
+        .map(|r| r.epoch)
 }
 
 pub fn stop(app: &AppHandle, bot_id: &str) {
