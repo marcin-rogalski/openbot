@@ -1,4 +1,4 @@
-//! Keenable search wire format — kept out of the domain.
+//! Keenable search/fetch wire format — kept out of the domain.
 
 use serde::Deserialize;
 
@@ -19,4 +19,13 @@ pub struct SearchResult {
     pub description: String,
     #[serde(default)]
     pub snippet: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchResponse {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub content: String,
 }
