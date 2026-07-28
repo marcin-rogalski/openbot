@@ -384,6 +384,37 @@ impl ResolvedTool {
             + if failed { " (failed)" } else { "" }
     }
 
+    /// Present-tense label shown on Discord *while* the tool runs, so the user
+    /// sees what the bot is doing (before any progress or the final summary).
+    pub fn active_label(&self, args: &Value) -> String {
+        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
+        match &self.kind {
+            ToolKind::Drive { op, .. } => match op {
+                DriveOp::Search => "🔎 Searching Google Drive…".into(),
+                DriveOp::Ask => "📚 Consulting the knowledge base…".into(),
+                DriveOp::ListSources => "📇 Listing knowledge sources…".into(),
+                DriveOp::Reindex => "🔄 Rebuilding the knowledge index…".into(),
+                DriveOp::List => "📁 Listing Google Drive…".into(),
+                DriveOp::Read => "📄 Reading a file…".into(),
+                DriveOp::Create => "📝 Creating a file…".into(),
+                DriveOp::CreateFolder => "📁 Creating a folder…".into(),
+                DriveOp::Update => "✏️ Updating a file…".into(),
+                DriveOp::Delete => "🗑️ Moving a file to trash…".into(),
+                DriveOp::Backfill => "📎 Archiving recent attachments…".into(),
+                DriveOp::SaveLink => "📥 Saving a linked file…".into(),
+                DriveOp::TranscribeLink => "🎙️ Transcribing a linked file…".into(),
+            },
+            ToolKind::Web { op, .. } => match op {
+                WebOp::Search => "🌐 Searching the web…".into(),
+                WebOp::Fetch => format!("🌐 Reading {}…", domain_of(str_arg("url"))),
+            },
+            ToolKind::Memory { op } => match op {
+                MemoryOp::Save => "🧠 Saving a memory…".into(),
+                MemoryOp::Delete => "🧠 Forgetting a memory…".into(),
+            },
+        }
+    }
+
     /// URLs this call surfaced, for the reply's "Sources" header. A fetch's
     /// source is its `url` arg; a search's are the result URLs. Empty for
     /// non-web tools.
@@ -495,7 +526,32 @@ pub fn prompt_section(catalog: &[ResolvedTool]) -> String {
 }
 
 /// Run a resolved tool call; returns a result string (ok or `error: …`).
-pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &Value) -> String {
+/// A sink for human-readable progress messages from a long-running tool, shown
+/// live on Discord. `report` is a no-op when there's no receiver.
+#[derive(Clone)]
+pub struct Progress(Option<tokio::sync::mpsc::UnboundedSender<String>>);
+
+impl Progress {
+    /// A reporter plus the receiver `discord.rs` drains to edit the status message.
+    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Progress(Some(tx)), rx)
+    }
+
+    pub fn report(&self, msg: impl Into<String>) {
+        if let Some(tx) = &self.0 {
+            let _ = tx.send(msg.into());
+        }
+    }
+}
+
+pub async fn execute(
+    app: &AppHandle,
+    bot_id: &str,
+    tool: &ResolvedTool,
+    args: &Value,
+    progress: &Progress,
+) -> String {
     let arg = |key: &str| {
         args.get(key)
             .and_then(Value::as_str)
@@ -560,7 +616,7 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                     let Some(bot) = config::load_bot(app, bot_id) else {
                         return "error: bot config not found".to_string();
                     };
-                    reindex(app, &bot, &tool.instance_id, cid, secret, folder).await
+                    reindex(app, &bot, &tool.instance_id, cid, secret, folder, progress).await
                 }
                 DriveOp::List => match gdrive::list(app, cid, secret, folder).await {
                     Ok(files) => format_files(&files),
@@ -629,6 +685,7 @@ pub async fn execute(app: &AppHandle, bot_id: &str, tool: &ResolvedTool, args: &
                         secret,
                         folder,
                         &arg("url"),
+                        progress,
                     )
                     .await
                 }
@@ -939,6 +996,7 @@ async fn transcribe_link(
     client_secret: &str,
     folder: &str,
     url: &str,
+    progress: &Progress,
 ) -> String {
     /// Refuse downloads larger than this (~2 GB) to avoid pathological transfers.
     const MAX_BYTES: u64 = 2_000_000_000;
@@ -987,10 +1045,15 @@ async fn transcribe_link(
         &bot.id,
         format!("transcribe_link: downloading \"{}\"…", meta.name),
     );
+    progress.report(format!("🎙️ Transcribing \"{}\" — downloading…", meta.name));
     if let Err(e) = gdrive::download_to_path(app, client_id, client_secret, &id, &src).await {
         let _ = std::fs::remove_dir_all(&work);
         return format!("error: download failed: {e}");
     }
+    progress.report(format!(
+        "🎙️ Transcribing \"{}\" — decoding audio…",
+        meta.name
+    ));
 
     let (chunks, truncated) = {
         let (src_c, work_c, filename, mime) = (
@@ -1032,6 +1095,12 @@ async fn transcribe_link(
             &bot.id,
             format!("transcribe_link: chunk {}/{n}…", i + 1),
         );
+        progress.report(format!(
+            "🎙️ Transcribing \"{}\" — chunk {}/{n} (~{} min in)…",
+            meta.name,
+            i + 1,
+            (i as u32 * crate::audio::CHUNK_SECS) / 60
+        ));
         let Ok(bytes) = std::fs::read(chunk) else {
             continue;
         };
@@ -1217,6 +1286,7 @@ fn format_hits(question: &str, hits: &[knowledge::Hit]) -> String {
 /// Rebuild the local index from the Drive folder: read + chunk + embed every
 /// supported file not already indexed. The index is a derived cache, so this can
 /// always reconstruct it.
+#[allow(clippy::too_many_arguments)]
 async fn reindex(
     app: &AppHandle,
     bot: &BotConfig,
@@ -1224,18 +1294,29 @@ async fn reindex(
     client_id: &str,
     client_secret: &str,
     folder_id: &str,
+    progress: &Progress,
 ) -> String {
     bot::emit_log(app, &bot.id, "reindex: scanning Drive…");
+    progress.report("🔄 Rebuilding the knowledge index — scanning Drive…");
     let files = match gdrive::search(app, client_id, client_secret, folder_id, "").await {
         Ok(files) => files,
         Err(e) => return format!("error: {e}"),
     };
+    let total = files
+        .iter()
+        .filter(|f| f.mime_type != "application/vnd.google-apps.folder")
+        .count();
 
-    let (mut indexed, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+    let (mut indexed, mut skipped, mut failed, mut seen) = (0usize, 0usize, 0usize, 0usize);
     for f in &files {
         if f.mime_type == "application/vnd.google-apps.folder" {
             continue;
         }
+        seen += 1;
+        progress.report(format!(
+            "🔄 Rebuilding the knowledge index — {seen}/{total}: \"{}\"",
+            f.name
+        ));
         if knowledge::has_source(app, instance_id, &f.id)
             .await
             .unwrap_or(false)

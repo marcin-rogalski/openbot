@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **More visible progress on Discord** — the live status message now shows what the bot is
+  doing *while* a tool runs (present-tense labels like "🎙️ Transcribing… ", "🔎 Searching
+  the web…"), streams real progress for long operations (transcription: downloading →
+  decoding → "chunk N/M"; reindex: "file N/M"), says "⏳ Waiting for your approval…" when a
+  tool needs approval, and shows a persistent "Transcribing…" note for posted audio (instead
+  of a typing indicator that times out). Status edits are throttled to respect rate limits.
+
 - **Google Drive links** — paste a Drive link and the bot can read/summarize it (`read` now
   accepts a link or id), copy it into the tool's folder + index it (`save_link`), or, for an
   audio/video link, download + transcribe it and save a transcript + summary

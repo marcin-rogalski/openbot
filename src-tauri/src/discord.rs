@@ -326,6 +326,7 @@ impl Handler {
                 return "denied by policy".to_string();
             }
             Policy::Ask => {
+                set_status(ctx, status, "⏳ Waiting for your approval…").await;
                 match bot::request_approval(&self.app, &self.bot_id, name, &call.args).await {
                     Decision::Approve => true,
                     Decision::Deny => false,
@@ -345,10 +346,29 @@ impl Handler {
             return "denied by user".to_string();
         }
 
+        // Show what the bot is doing while the tool runs (before any progress).
+        set_status(ctx, status, &tool.active_label(&call.args)).await;
+
         let result = if tool.is_backfill() {
             self.backfill(ctx, channel_id, tool, &call.args).await
         } else {
-            tools::execute(&self.app, &self.bot_id, tool, &call.args).await
+            // Run the tool, live-updating the status message from its progress
+            // reports (throttled to respect Discord's edit rate limits).
+            let (progress, mut rx) = tools::Progress::channel();
+            let exec = tools::execute(&self.app, &self.bot_id, tool, &call.args, &progress);
+            tokio::pin!(exec);
+            let mut last_edit = Instant::now() - Duration::from_secs(10);
+            loop {
+                tokio::select! {
+                    r = &mut exec => break r,
+                    Some(update) = rx.recv() => {
+                        if last_edit.elapsed() >= Duration::from_millis(1500) {
+                            set_status(ctx, status, &update).await;
+                            last_edit = Instant::now();
+                        }
+                    }
+                }
+            }
         };
         for url in tool.source_urls(&call.args, &result) {
             if !sources.contains(&url) {
@@ -463,7 +483,13 @@ impl Handler {
                     .await;
                 continue;
             }
-            let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+            // A persistent "transcribing" note (typing indicators time out after
+            // ~10 s); removed once the transcript is posted.
+            let mut note = msg
+                .channel_id
+                .say(&ctx.http, format!("🎙️ Transcribing **{}**…", a.filename))
+                .await
+                .ok();
             bot::emit_log(
                 &self.app,
                 &self.bot_id,
@@ -478,6 +504,12 @@ impl Handler {
                         &self.bot_id,
                         format!("audio \"{}\": download failed: {e}", a.filename),
                     );
+                    set_status(
+                        ctx,
+                        &mut note,
+                        &format!("🎙️ Couldn't fetch \"{}\": {e}", a.filename),
+                    )
+                    .await;
                     continue;
                 }
             };
@@ -510,13 +542,12 @@ impl Handler {
                             &self.bot_id,
                             format!("audio \"{}\": transcription failed: {e}", a.filename),
                         );
-                        let _ = msg
-                            .channel_id
-                            .say(
-                                &ctx.http,
-                                format!("🎙️ Couldn't transcribe \"{}\": {e}", a.filename),
-                            )
-                            .await;
+                        set_status(
+                            ctx,
+                            &mut note,
+                            &format!("🎙️ Couldn't transcribe \"{}\": {e}", a.filename),
+                        )
+                        .await;
                         continue;
                     }
                 };
@@ -561,6 +592,10 @@ impl Handler {
                     &self.bot_id,
                     format!("audio \"{}\": send failed: {e}", a.filename),
                 );
+            }
+            // The result message replaces the "Transcribing…" note.
+            if let Some(m) = &note {
+                let _ = m.delete(&ctx.http).await;
             }
             bot::emit_tool_activity(
                 &self.app,
