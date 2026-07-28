@@ -126,7 +126,7 @@ impl Meeting {
         let at_secs = self.started.elapsed().as_secs();
         tokio::spawn(async move {
             let user_id = self.ssrc_user.lock().await.get(&ssrc).copied();
-            let wav = pcm_to_wav(&mono, SAMPLE_RATE);
+            let wav = crate::audio::pcm_to_wav(&mono, SAMPLE_RATE);
             match model::transcribe(&self.bot, wav, "utterance.wav", "audio/wav").await {
                 Ok(text) if !text.trim().is_empty() => {
                     self.transcript.lock().await.push(Line {
@@ -164,7 +164,7 @@ impl Meeting {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
             let at_secs = self.started.elapsed().as_secs();
             let user_id = self.ssrc_user.lock().await.get(&ssrc).copied();
-            let wav = pcm_to_wav(&mono, SAMPLE_RATE);
+            let wav = crate::audio::pcm_to_wav(&mono, SAMPLE_RATE);
             if let Ok(text) = model::transcribe(&self.bot, wav, "utterance.wav", "audio/wav").await
             {
                 if !text.trim().is_empty() {
@@ -274,29 +274,6 @@ fn downmix_mono(stereo: &[i16]) -> Vec<i16> {
         .collect()
 }
 
-/// Wrap mono 16-bit PCM in a minimal WAV container.
-fn pcm_to_wav(mono: &[i16], sample_rate: u32) -> Vec<u8> {
-    let data_len = (mono.len() * 2) as u32;
-    let mut out = Vec::with_capacity(44 + data_len as usize);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len).to_le_bytes());
-    out.extend_from_slice(b"WAVE");
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
-    out.extend_from_slice(&1u16.to_le_bytes()); // audio format = PCM
-    out.extend_from_slice(&1u16.to_le_bytes()); // channels = mono
-    out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
-    out.extend_from_slice(&2u16.to_le_bytes()); // block align
-    out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_len.to_le_bytes());
-    for s in mono {
-        out.extend_from_slice(&s.to_le_bytes());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,14 +281,5 @@ mod tests {
     #[test]
     fn downmix_averages_channels() {
         assert_eq!(downmix_mono(&[100i16, 200, -100, 100]), vec![150i16, 0]);
-    }
-
-    #[test]
-    fn wav_header_valid() {
-        let wav = pcm_to_wav(&[0i16, 1, -1], 48_000);
-        assert_eq!(&wav[0..4], b"RIFF");
-        assert_eq!(&wav[8..12], b"WAVE");
-        assert_eq!(&wav[36..40], b"data");
-        assert_eq!(wav.len(), 44 + 6);
     }
 }

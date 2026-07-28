@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Client-side audio decoding** — posted mp3 / m4a / FLAC / Ogg-Vorbis are decoded to WAV
+  inside openbot (pure-Rust `symphonia`, new `audio.rs`) before transcription, so the model
+  server needs no extra codecs (no ffmpeg). Opus (Discord voice messages) still needs a
+  server that decodes it. Shared `pcm_to_wav` with the live-voice path.
+
 - **Audio transcription** — audio attachments are transcribed via the model server's
   `/audio/transcriptions` endpoint (new **Transcription model** setting); the bot posts a
   transcript + summary `.md`, feeds the transcript into its reply, and (with a Drive tool)

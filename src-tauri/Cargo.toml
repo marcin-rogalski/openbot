@@ -50,6 +50,10 @@ tiny_http = "0.12"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Text extraction from PDFs (text-based; OCR deferred) — see ingest.rs.
 pdf-extract = "0.7"
+# Pure-Rust audio decoding (mp3/m4a/flac/ogg/wav → PCM) so we can normalise any
+# posted audio to WAV before transcription, independent of the model server's
+# codec support — see audio.rs.
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
 
 # macOS: intercept the Quit AppleEvent the OS fires once the window is hidden,
 # so the app keeps running from the tray (see macos.rs).

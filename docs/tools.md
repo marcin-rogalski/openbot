@@ -102,12 +102,19 @@ e.g. whisper.cpp, faster-whisper, LM Studio, or OpenAI Whisper). It works in two
 
 ### Audio files
 
-Post an audio file (`.mp3`, `.m4a`, `.wav`, `.ogg`, `.opus`, `.flac`, …) in a channel the
-bot is in. The bot transcribes it and replies with two attachments — `*.transcript.md` and
+Post an audio file (`.mp3`, `.m4a`, `.wav`, `.ogg`, `.flac`, …) in a channel the bot is in.
+The bot transcribes it and replies with two attachments — `*.transcript.md` and
 `*.summary.md` (overview + key points + action items) — and feeds the transcript into its
 answer so it can act on the audio the same turn. With a **Google Drive** tool enabled, both
 files are saved to Drive and indexed into the knowledge base, so you can `ask` about them
 later. Files up to ~25 MB are transcribed.
+
+Compressed audio is **decoded to WAV inside openbot** (pure-Rust `symphonia`) before it's
+sent, so the transcription server needs no extra codecs (no ffmpeg): mp3, m4a/AAC, FLAC,
+and Ogg Vorbis all work against a plain Whisper endpoint. The exception is **Opus** (what
+Discord's built-in *voice messages* use), which symphonia doesn't decode — those still
+require a server that can handle Opus. Live voice channels are unaffected (openbot already
+sends WAV).
 
 ### Live voice channels
 

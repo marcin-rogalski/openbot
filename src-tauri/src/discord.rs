@@ -482,24 +482,44 @@ impl Handler {
                 }
             };
             let mime = a.content_type.clone().unwrap_or_default();
-            let transcript = match model::transcribe(&self.bot, bytes, &a.filename, &mime).await {
-                Ok(t) => t,
-                Err(e) => {
-                    bot::emit_log(
-                        &self.app,
-                        &self.bot_id,
-                        format!("audio \"{}\": transcription failed: {e}", a.filename),
-                    );
-                    let _ = msg
-                        .channel_id
-                        .say(
-                            &ctx.http,
-                            format!("🎙️ Couldn't transcribe \"{}\": {e}", a.filename),
-                        )
-                        .await;
-                    continue;
+            // Normalise to WAV client-side (mp3/m4a/flac/ogg → PCM via symphonia)
+            // so the transcription server needs no extra codecs. Decoding is
+            // CPU-bound, so keep it off the async runtime. Falls back to the raw
+            // bytes if the codec isn't supported (e.g. Opus).
+            let (send_bytes, send_name, send_mime) = {
+                let raw = bytes.clone();
+                let filename = a.filename.clone();
+                let ct = mime.clone();
+                let decoded = tokio::task::spawn_blocking(move || {
+                    crate::audio::decode_to_wav(&raw, &filename, &ct)
+                })
+                .await
+                .ok()
+                .flatten();
+                match decoded {
+                    Some(wav) => (wav, "audio.wav".to_string(), "audio/wav".to_string()),
+                    None => (bytes, a.filename.clone(), mime.clone()),
                 }
             };
+            let transcript =
+                match model::transcribe(&self.bot, send_bytes, &send_name, &send_mime).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        bot::emit_log(
+                            &self.app,
+                            &self.bot_id,
+                            format!("audio \"{}\": transcription failed: {e}", a.filename),
+                        );
+                        let _ = msg
+                            .channel_id
+                            .say(
+                                &ctx.http,
+                                format!("🎙️ Couldn't transcribe \"{}\": {e}", a.filename),
+                            )
+                            .await;
+                        continue;
+                    }
+                };
             let summary = model::summarize_transcript(&self.bot, &transcript)
                 .await
                 .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
