@@ -5,5 +5,6 @@
 //! see `compose_search_web`.
 
 pub mod fetch_page;
+pub mod memory;
 pub mod search_web;
 pub mod shared;

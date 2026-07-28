@@ -1086,8 +1086,10 @@ impl Handler {
         }
         // Load memories fresh so ones saved this session apply next turn.
         if self.bot.memory_enabled {
-            let memories = crate::memory::load(&self.app, &self.bot_id);
-            system.push_str(&crate::memory::system_section(&memories));
+            let memories = crate::infrastructure::driving::memory::load(&self.app, &self.bot_id);
+            system.push_str(&crate::infrastructure::driving::memory::system_section(
+                &memories,
+            ));
         }
         let mut messages = vec![ChatMessage::system(system)];
 

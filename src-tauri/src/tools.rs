@@ -17,7 +17,7 @@ use tauri::AppHandle;
 use crate::config::{self, BotConfig, GlobalConfig};
 use crate::gdrive::{self, DriveFile};
 use crate::knowledge::{self, SourceMeta};
-use crate::{bot, ingest, memory, model};
+use crate::{bot, ingest, model};
 
 /// Fixed instance id for the per-bot memory tools.
 const MEMORY_INSTANCE: &str = "memory";
@@ -727,9 +727,17 @@ pub async fn execute(
             }
         },
         ToolKind::Memory { op } => match op {
-            MemoryOp::Save => memory::save(app, bot_id, &arg("kind"), &arg("text")).await,
+            MemoryOp::Save => {
+                crate::infrastructure::driving::memory::save(
+                    app,
+                    bot_id,
+                    &arg("kind"),
+                    &arg("text"),
+                )
+                .await
+            }
             MemoryOp::Delete => {
-                memory::delete(app, bot_id, &arg("id"));
+                crate::infrastructure::driving::memory::delete(app, bot_id, &arg("id"));
                 "forgotten".to_string()
             }
         },
@@ -798,7 +806,9 @@ pub async fn deliver_attachment(
             folder_id,
         } => {
             let guidance = if bot.memory_enabled {
-                memory::guidance(&memory::load(app, &bot.id))
+                crate::infrastructure::driving::memory::guidance(
+                    &crate::infrastructure::driving::memory::load(app, &bot.id),
+                )
             } else {
                 String::new()
             };
@@ -922,7 +932,9 @@ pub async fn store_text_artifact(
     } = sink;
 
     let guidance = if bot.memory_enabled {
-        memory::guidance(&memory::load(app, &bot.id))
+        crate::infrastructure::driving::memory::guidance(
+            &crate::infrastructure::driving::memory::load(app, &bot.id),
+        )
     } else {
         String::new()
     };

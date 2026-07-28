@@ -3,3 +3,4 @@
 //! before anything that depends on it — see `compose::shared`.
 
 pub mod http;
+pub mod time;

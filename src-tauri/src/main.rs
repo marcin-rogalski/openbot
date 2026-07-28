@@ -18,7 +18,6 @@ mod ingest;
 mod knowledge;
 #[cfg(target_os = "macos")]
 mod macos;
-mod memory;
 mod model;
 mod tools;
 mod tray;
@@ -63,9 +62,9 @@ fn main() {
             bot::resolve_tool_approval,
             gdrive::connect_drive,
             gdrive::drive_status,
-            memory::get_memories,
-            memory::delete_memory,
-            memory::clear_memories
+            infrastructure::driving::memory::get_memories,
+            infrastructure::driving::memory::delete_memory,
+            infrastructure::driving::memory::clear_memories
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

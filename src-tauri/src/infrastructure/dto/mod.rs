@@ -2,3 +2,4 @@
 //! never touches the domain.
 
 pub mod keenable;
+pub mod memory;
