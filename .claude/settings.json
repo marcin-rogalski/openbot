@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$(jq -r '.tool_input.file_path // empty')\"; [ -n \"$f\" ] && case \"$f\" in *.rs) rustfmt --edition 2021 \"$f\" 2>/dev/null || true;; *.ts|*.tsx|*.js|*.jsx|*.json) npx --no-install biome format --write \"$f\" 2>/dev/null || true;; esac",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

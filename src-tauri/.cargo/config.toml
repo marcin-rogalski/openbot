@@ -1,0 +1,5 @@
+# songbird's bundled libopus (audiopus_sys) ships a pre-3.5 CMakeLists that modern
+# CMake rejects without this policy shim. Setting it here means every local cargo
+# invocation (test / clippy / tauri build) gets it automatically.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
