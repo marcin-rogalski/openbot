@@ -57,6 +57,14 @@ Paste a Google Drive link and tell the bot what to do with it:
   splits it into ~5-minute WAV chunks, transcribes each, and saves a transcript + summary into
   the folder. This handles **long recordings** (meetings, conference audio) with bounded
   memory — including video files, whose audio track is extracted. Files up to ~2 GB.
+  It runs **in the background**: the bot acknowledges immediately, shows live progress
+  ("chunk N/M"), and posts the transcript + summary to the channel when finished — so it isn't
+  blocked for the whole (possibly multi-hour) recording.
+
+> **Speaker diarization** ("who said what" in a recording) is not yet supported for files —
+> Whisper alone can't separate speakers, and it needs a separate diarization model. It's a
+> planned optional hook (a configurable diarization endpoint). Live *voice channels* are
+> already speaker-labelled by Discord user.
 
 It recognizes the usual link shapes (`/file/d/<id>`, `/document/d/<id>`, `?id=<id>`,
 `/drive/folders/<id>`). **Access requirement:** the bot reads with *its own* Google account,

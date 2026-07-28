@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Background transcription** — `transcribe_link` on a long recording no longer blocks the
+  bot: it acknowledges immediately, runs as a background job with live progress in the
+  channel, and posts the transcript + summary when finished. (Speaker diarization is deferred
+  — it needs a separate model; a configurable diarization endpoint is the planned hook.)
 - **Timestamped transcripts** — transcripts now prefix each line with `[MM:SS]` (from the
   model's segment times; offset per chunk for long files), so meeting/conference recordings
   are navigable. Applies to posted audio and Drive-link transcription.

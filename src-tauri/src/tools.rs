@@ -133,9 +133,10 @@ impl DriveOp {
                  account (or be public). Use when the user pastes a Drive link and wants it kept."
             ),
             DriveOp::TranscribeLink => format!(
-                "Transcribe an audio/video file from a pasted Google Drive link: returns the \
-                 transcript and saves a transcript + summary into \"{folder_name}\". Link must be \
-                 accessible to this bot's Google account."
+                "Transcribe an audio/video file from a pasted Google Drive link. Runs in the \
+                 background: it posts the transcript + summary to this channel when finished (and \
+                 saves them into \"{folder_name}\"), so you get an immediate acknowledgement. Link \
+                 must be accessible to this bot's Google account."
             ),
         }
     }
@@ -300,6 +301,18 @@ impl ResolvedTool {
             &self.kind,
             ToolKind::Drive {
                 op: DriveOp::Backfill,
+                ..
+            }
+        )
+    }
+
+    /// True for the Drive `transcribe_link` op, which `discord.rs` runs as a
+    /// background job (it posts the transcript to the channel when done).
+    pub fn is_transcribe_link(&self) -> bool {
+        matches!(
+            &self.kind,
+            ToolKind::Drive {
+                op: DriveOp::TranscribeLink,
                 ..
             }
         )
@@ -673,21 +686,10 @@ pub async fn execute(
                     )
                     .await
                 }
+                // Transcription runs as a background job with channel context, so
+                // it's intercepted in discord.rs `run_tool` before reaching here.
                 DriveOp::TranscribeLink => {
-                    let Some(bot) = config::load_bot(app, bot_id) else {
-                        return "error: bot config not found".to_string();
-                    };
-                    transcribe_link(
-                        app,
-                        &bot,
-                        &tool.instance_id,
-                        cid,
-                        secret,
-                        folder,
-                        &arg("url"),
-                        progress,
-                    )
-                    .await
+                    "error: transcription must run with channel context".to_string()
                 }
             }
         }
@@ -985,10 +987,12 @@ async fn save_link(
     note
 }
 
-/// Transcribe an audio/video Drive file (from a link/id): save a transcript +
-/// summary into the folder, index them, and return the transcript.
+/// Transcribe an audio/video Drive file (from a link/id): stream it to disk,
+/// split into chunks, transcribe each, save a transcript + summary into the
+/// folder + index them, and return the generated `.md` files (name + content) to
+/// deliver to Discord. Long-running; `discord.rs` runs it as a background job.
 #[allow(clippy::too_many_arguments)]
-async fn transcribe_link(
+pub async fn run_transcription(
     app: &AppHandle,
     bot: &BotConfig,
     instance_id: &str,
@@ -997,7 +1001,7 @@ async fn transcribe_link(
     folder: &str,
     url: &str,
     progress: &Progress,
-) -> String {
+) -> Result<Vec<(String, String)>, String> {
     /// Refuse downloads larger than this (~2 GB) to avoid pathological transfers.
     const MAX_BYTES: u64 = 2_000_000_000;
     /// Cap the number of ~5-minute chunks (~8 h) so one call can't run forever.
@@ -1005,50 +1009,46 @@ async fn transcribe_link(
 
     let id = gdrive::file_id_from_link(url);
     if id.trim().is_empty() {
-        return "error: no Google Drive link or id provided".to_string();
+        return Err("no Google Drive link or id provided".to_string());
     }
-    let meta = match gdrive::file_meta(app, client_id, client_secret, &id).await {
-        Ok(m) => m,
-        Err(e) => {
-            return format!(
-                "error: can't access that link ({e}). It must be shared with this bot's Google \
-                 account."
+    let meta = gdrive::file_meta(app, client_id, client_secret, &id)
+        .await
+        .map_err(|e| {
+            format!(
+                "can't access that link ({e}). It must be shared with this bot's Google account."
             )
-        }
-    };
+        })?;
     if !(meta.mime_type.starts_with("audio/") || meta.mime_type.starts_with("video/")) {
-        return format!(
-            "error: \"{}\" is {} — not audio/video. Use read or save_link instead.",
+        return Err(format!(
+            "\"{}\" is {} — not audio/video. Use read or save_link instead.",
             meta.name, meta.mime_type
-        );
+        ));
     }
     if let Some(bytes) = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok()) {
         if bytes > MAX_BYTES {
-            return format!(
-                "error: \"{}\" is {:.1} GB — too large to transcribe (limit ~2 GB).",
+            return Err(format!(
+                "\"{}\" is {:.1} GB — too large to transcribe (limit ~2 GB).",
                 meta.name,
                 bytes as f64 / 1e9
-            );
+            ));
         }
     }
 
     // Work in a temp dir: stream the download to disk, split into WAV chunks,
     // transcribe each — bounded memory, so long recordings work.
     let work = std::env::temp_dir().join(config::new_id("openbot-tx"));
-    if let Err(e) = std::fs::create_dir_all(&work) {
-        return format!("error: can't create temp dir: {e}");
-    }
+    std::fs::create_dir_all(&work).map_err(|e| format!("can't create temp dir: {e}"))?;
     let src = work.join("source");
 
     bot::emit_log(
         app,
         &bot.id,
-        format!("transcribe_link: downloading \"{}\"…", meta.name),
+        format!("transcribe: downloading \"{}\"…", meta.name),
     );
     progress.report(format!("🎙️ Transcribing \"{}\" — downloading…", meta.name));
     if let Err(e) = gdrive::download_to_path(app, client_id, client_secret, &id, &src).await {
         let _ = std::fs::remove_dir_all(&work);
-        return format!("error: download failed: {e}");
+        return Err(format!("download failed: {e}"));
     }
     progress.report(format!(
         "🎙️ Transcribing \"{}\" — decoding audio…",
@@ -1077,11 +1077,11 @@ async fn transcribe_link(
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 let _ = std::fs::remove_dir_all(&work);
-                return format!("error: couldn't decode audio: {e}");
+                return Err(format!("couldn't decode audio: {e}"));
             }
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&work);
-                return format!("error: decode task failed: {e}");
+                return Err(format!("decode task failed: {e}"));
             }
         }
     };
@@ -1129,7 +1129,7 @@ async fn transcribe_link(
     let _ = std::fs::remove_dir_all(&work);
 
     if plain.trim().is_empty() {
-        return "error: transcription produced no text".to_string();
+        return Err("transcription produced no text".to_string());
     }
     if truncated {
         timestamped.push_str("\n\n[transcript truncated — recording exceeded the length cap]");
@@ -1144,33 +1144,29 @@ async fn transcribe_link(
         .rsplit_once('.')
         .map(|(s, _)| s)
         .unwrap_or(&meta.name);
-    let transcript_md = format!(
-        "# Transcript — {}\n\n- Source: Google Drive link\n\n---\n\n{}\n",
-        meta.name, timestamped
-    );
-    let summary_md = format!("# Summary — {}\n\n{}\n", meta.name, summary);
+    let files = vec![
+        (
+            format!("{stem}.transcript.md"),
+            format!(
+                "# Transcript — {}\n\n- Source: Google Drive link\n\n---\n\n{}\n",
+                meta.name, timestamped
+            ),
+        ),
+        (
+            format!("{stem}.summary.md"),
+            format!("# Summary — {}\n\n{}\n", meta.name, summary),
+        ),
+    ];
 
-    for (fname, content) in [
-        (format!("{stem}.transcript.md"), transcript_md),
-        (format!("{stem}.summary.md"), summary_md),
-    ] {
-        match gdrive::create(app, client_id, client_secret, folder, &fname, &content).await {
+    for (fname, content) in &files {
+        match gdrive::create(app, client_id, client_secret, folder, fname, content).await {
             Ok(fid) => {
-                index_text(
-                    app,
-                    bot,
-                    instance_id,
-                    &fid,
-                    &fname,
-                    "text/markdown",
-                    &content,
-                )
-                .await;
+                index_text(app, bot, instance_id, &fid, fname, "text/markdown", content).await;
             }
             Err(e) => bot::emit_log(app, &bot.id, format!("save \"{fname}\": {e}")),
         }
     }
-    truncate(&plain, 6000)
+    Ok(files)
 }
 
 /// Pick the best subfolder for a file (rule-guided model classification), or the

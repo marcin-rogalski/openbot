@@ -356,6 +356,14 @@ impl Handler {
             return "denied by user".to_string();
         }
 
+        // Transcription is long-running: kick it off in the background and reply
+        // immediately, so the bot isn't blocked while a recording is processed.
+        if tool.is_transcribe_link() {
+            return self
+                .spawn_transcription(ctx, channel_id, tool, &call.args)
+                .await;
+        }
+
         // Show what the bot is doing while the tool runs (before any progress).
         set_status(ctx, status, &tool.active_label(&call.args)).await;
 
@@ -394,6 +402,110 @@ impl Handler {
             summary,
         );
         result
+    }
+
+    /// Run a Drive-link transcription as a background job: post live progress to
+    /// the channel and deliver the transcript + summary when done. Returns
+    /// immediately so the reply loop isn't blocked for the whole recording.
+    async fn spawn_transcription(
+        &self,
+        ctx: &Context,
+        channel_id: ChannelId,
+        tool: &ResolvedTool,
+        args: &serde_json::Value,
+    ) -> String {
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if url.trim().is_empty() {
+            return "error: no Google Drive link provided".to_string();
+        }
+        let Some(AttachmentSink::Drive {
+            instance_id,
+            client_id,
+            client_secret,
+            folder_id,
+            ..
+        }) = tool.drive_sink()
+        else {
+            return "error: not a Google Drive tool".to_string();
+        };
+
+        let app = self.app.clone();
+        let bot_id = self.bot_id.clone();
+        let http = ctx.http.clone();
+        tokio::spawn(async move {
+            let bot = config::load_bot(&app, &bot_id).unwrap_or_default();
+            let mut status = channel_id
+                .say(&http, "🎙️ Starting transcription…")
+                .await
+                .ok();
+            let (progress, mut rx) = tools::Progress::channel();
+            let job = tools::run_transcription(
+                &app,
+                &bot,
+                &instance_id,
+                &client_id,
+                &client_secret,
+                &folder_id,
+                &url,
+                &progress,
+            );
+            tokio::pin!(job);
+            let mut last = Instant::now() - Duration::from_secs(10);
+            let result = loop {
+                tokio::select! {
+                    r = &mut job => break r,
+                    Some(update) = rx.recv() => {
+                        if last.elapsed() >= Duration::from_millis(1500) {
+                            if let Some(m) = status.as_mut() {
+                                let _ = m
+                                    .edit(&http, EditMessage::new().content(truncate(&update, DISCORD_MAX)))
+                                    .await;
+                            }
+                            last = Instant::now();
+                        }
+                    }
+                }
+            };
+            match result {
+                Ok(out_files) => {
+                    let files: Vec<CreateAttachment> = out_files
+                        .into_iter()
+                        .map(|(name, content)| CreateAttachment::bytes(content.into_bytes(), name))
+                        .collect();
+                    let builder = CreateMessage::new()
+                        .content("🎙️ Transcript ready — transcript + summary attached.")
+                        .files(files);
+                    if let Err(e) = channel_id.send_message(&http, builder).await {
+                        bot::emit_log(&app, &bot_id, format!("transcription: send failed: {e}"));
+                    }
+                    if let Some(m) = &status {
+                        let _ = m.delete(&http).await;
+                    }
+                }
+                Err(e) => {
+                    bot::emit_log(&app, &bot_id, format!("transcription failed: {e}"));
+                    if let Some(m) = status.as_mut() {
+                        let _ = m
+                            .edit(
+                                &http,
+                                EditMessage::new().content(truncate(
+                                    &format!("🎙️ Transcription failed: {e}"),
+                                    DISCORD_MAX,
+                                )),
+                            )
+                            .await;
+                    }
+                }
+            }
+        });
+
+        "🎙️ Started transcribing in the background — I'll post the transcript in this channel \
+         when it's done."
+            .to_string()
     }
 
     /// Extract text from the trigger message's attachments so their content can
