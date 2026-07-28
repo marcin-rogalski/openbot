@@ -14,23 +14,30 @@ into one "event" would be a mistake.
 
 Keep three distinct flows.
 
-### 1. System-prompt contribution — a synchronous *pull*, not an event
+### 1. Tool availability + business context — a synchronous *pull* at prompt time
 
-At prompt-build time the application asks each registered tool for its contribution:
-`Tool::system_prompt_section(&host, bot) -> Option<String>`. Re-pulled **every turn**, because
-it changes (memory rules/notes; a tool introducing its ops). This is how a tool "registers" its
-presence to the model and injects data.
+Two different contributions, both gathered per turn (not events):
+
+- **Tool availability** = each tool's **structured `ToolManifest`** (name, ops, arg schemas,
+  description). The application passes these to the `ChatModel` port; the **AI adapter** renders
+  them into the provider's format — a `TOOL_CALL {json}` convention in the system prompt for
+  OpenAI-compatible servers, or a native `tools` parameter for Anthropic (see
+  [ADR-0002](0002-host-tool-sdk.md)/[ADR-0006](0006-module-layout.md)). So the *format* is infra;
+  the *manifest* is declarative and tool-owned.
+- **Business context** = `Tool::system_prompt_section(&ctx, bot) -> Option<String>`, plain
+  provider-agnostic prompt **text** (memory's rules/notes, the bot's identity). Built by
+  `application/services/prompt.rs` and injected as messages. This is business data, not protocol.
 
 - **Token budget: generous for now.** No hard trimming initially — assemble everything with a
-  large cap and revisit with tiering/priority later (tool one-liners always; full schemas/notes
-  on demand). Memory's existing note/char budget stays as-is.
+  large cap and revisit with tiering/priority later. Memory's existing note/char budget stays.
 
-### 2. Tool → model results — the ReAct contract, as readable text
+### 2. Tool → model results — readable text (format owned by the adapter)
 
-`Tool::execute` returns a `ToolResult`: **readable text** (what the model reads as
-`TOOL_RESULT`) plus **optional structured metadata** (e.g. `sources` for the reply header,
-already done today). Do **not** force a rigid JSON envelope — LLMs handle described-text results
-better; the system prompt tells the model how to read them.
+`Tool::execute` returns a `ToolResult`: **readable text** + **optional structured metadata**
+(e.g. `sources` for the reply header). The application treats it as text; *how* it's handed back
+to the model (a `TOOL_RESULT:` line for the text convention, or a `tool_result` block for a
+native API) is the **AI adapter's** job. Do **not** force a rigid JSON envelope on the text —
+LLMs read described text better.
 
 ### 3. Tool ↔ tool — a pub/sub event bus
 

@@ -109,8 +109,10 @@ directly). The agreed target — a **core + tool-plugin** architecture — is sp
 model ([ADR-0001](adr/0001-tool-plugin-architecture.md)), the `Host` tool SDK
 ([ADR-0002](adr/0002-host-tool-sdk.md)), the prompt/results/event-bus mechanisms
 ([ADR-0003](adr/0003-prompt-results-events.md)), async jobs + proactive turns
-([ADR-0004](adr/0004-async-jobs-and-proactive-turns.md)), and config layering
-([ADR-0005](adr/0005-config-layering.md)). Being migrated incrementally, tests first:
+([ADR-0004](adr/0004-async-jobs-and-proactive-turns.md)), config layering
+([ADR-0005](adr/0005-config-layering.md)), and the concrete module layout
+([ADR-0006](adr/0006-module-layout.md)). The contributor walk-through is
+[hexagonal.md](hexagonal.md). Being migrated incrementally, tests first:
 
 **Rust → hexagonal (ports & adapters):**
 `domain/` (pure types + rules, no IO) · `ports/` (traits: `ChatModel`, `Embedder`,

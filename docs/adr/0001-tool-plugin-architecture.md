@@ -21,20 +21,23 @@ be the stable core they build on.
 
 ## Decision
 
-Adopt **hexagonal layering** and model every capability as a **`Tool` plugin**:
+Adopt **hexagonal layering** and model every capability as a **`Tool` plugin**. The concrete
+module layout is in [ADR-0006](0006-module-layout.md); in outline:
 
 ```
-domain/       pure types + rules, no IO
-ports/        traits the app depends on (see ADR-0002: the Host)
-application/  the ReAct loop, ingestion, jobs — orchestration over ports
-adapters/     openai · gdrive · sqlite · discord · voice · store · os
-interface/    tauri commands + the localhost HTTP API
-tools/        the plugins (Drive, Web, Memory, Attachments, Transcription…)
+domain/        business data + invariants (no formats, algorithms, or IO)
+application/   ports/ · services/ · usecases/   (the hexagon core; ports live here)
+adapters/      driving/ (into the app) · driven/ (out of the app) · dto/
+tools/         the plugins — cohesive, outside the hexagon, over the ports
+app.rs         composition root
 ```
 
 - A `Tool` is a Rust **trait**; tools are registered at startup into a `Vec<Box<dyn Tool>>`
   ("registry"). No dynamic loading — see Alternatives.
-- Tools depend only on a **`Host`** (ADR-0002), never on concrete adapters or serenity.
+- **Tools live outside the hexagon** so their declarative (manifest/config) and reactive
+  (`execute`/`on_event`) halves stay together instead of smearing across domain/application/
+  adapters. They depend only on the application's ports via the `Ctx` (ADR-0002), never on
+  concrete adapters or serenity.
 - Attachments and transcription **become tools** with their own config (ADR-0005).
 - The three data flows (prompt / results / bus) are defined in ADR-0003; the job + proactive
   paths in ADR-0004.

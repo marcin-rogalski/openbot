@@ -8,10 +8,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Docs
 
-- **Architecture Decision Records** (`docs/adr/`) — the agreed target "core + tool-plugin"
-  architecture: ports/adapters + a `Tool` plugin registry, the `Host` tool SDK, the
-  prompt/results/event-bus mechanisms, async jobs + proactive turns, and config layering.
-  Design only; migration is incremental and test-guarded.
+- **Architecture Decision Records** (`docs/adr/`, 0001–0006) + a **hexagonal layout guide**
+  (`docs/hexagonal.md`) — the agreed target "core + tool-plugin" architecture: ports & adapters
+  (domain / application[ports·services·usecases] / adapters[driving·driven·dto] / tools outside
+  the hexagon), the `Ctx` struct-of-ports, a structured `ChatModel` port so swapping model
+  vendor is adapter-only, async jobs + proactive turns, and config layering. Design only;
+  migration is incremental and test-guarded.
 
 ### Fixed
 
