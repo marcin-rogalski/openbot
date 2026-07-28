@@ -26,9 +26,10 @@ pub const ACTIVITY_EVENT: &str = "bot://activity";
 /// Live token stream for an in-progress model call: `{ botId, id, content }` —
 /// the UI replaces the matching activity entry's content as it grows.
 pub const STREAM_EVENT: &str = "bot://stream";
-/// The bot's live activity label for the status bar: `{ botId, label }`, where
-/// `label` is a short string while it works (inference or a tool) and `null`
-/// when it goes idle.
+/// The bot's live activity for the status bar: `{ botId, label, detail }`.
+/// `label` (left side) is a short string while it works (inference or a tool),
+/// `null` when idle. `detail` (right side) is an optional quantitative note —
+/// tool progress like "42%"; when absent the UI falls back to inference speed.
 pub const BUSY_EVENT: &str = "bot://busy";
 /// Throughput numbers for the status bar (carries `botId`).
 pub const METRICS_EVENT: &str = "bot://metrics";
@@ -300,11 +301,15 @@ pub fn stream_update(app: &AppHandle, bot_id: &str, id: &str, content: &str) {
     );
 }
 
-/// Set the bot's live activity label for the status bar: `Some(label)` while it
-/// works (inference or a tool — e.g. "Searching the web…", "Transcribing 20%"),
-/// `None` when it goes idle.
-pub fn emit_busy(app: &AppHandle, bot_id: &str, label: Option<&str>) {
-    let _ = app.emit(BUSY_EVENT, json!({ "botId": bot_id, "label": label }));
+/// Set the bot's live activity for the status bar. `label` (Some while working —
+/// e.g. "🔎 Searching the web…" — None when idle) drives the left side; `detail`
+/// is an optional right-side note for tool progress (e.g. "42%"), and when None
+/// the UI shows inference speed there instead. A label change clears the detail.
+pub fn emit_busy(app: &AppHandle, bot_id: &str, label: Option<&str>, detail: Option<&str>) {
+    let _ = app.emit(
+        BUSY_EVENT,
+        json!({ "botId": bot_id, "label": label, "detail": detail }),
+    );
 }
 
 /// A tool-call activity carrying both the raw detail (`content`, shown in

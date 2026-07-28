@@ -10,13 +10,17 @@ function fmtTps(value: number | null | undefined, running: boolean): string {
 export function StatusBar({
   running,
   busy,
+  detail,
   metrics,
 }: {
   running: boolean
   /** Live activity label while the bot works (inference or a tool); absent = idle. */
   busy?: string | null
+  /** Right-side quantitative note (tool progress); falls back to inference speed. */
+  detail?: string | null
   metrics?: MetricsData
 }) {
+  const showDetail = running && detail
   return (
     <FooterBar className="status-bar">
       {running && busy ? (
@@ -34,9 +38,9 @@ export function StatusBar({
       <Flex align="center" gap="4">
         <Text>
           <Text as="span" color="fg.subtle">
-            speed
+            {showDetail ? "progress" : "speed"}
           </Text>{" "}
-          {fmtTps(metrics?.inferenceTps, running)}
+          {showDetail ? detail : fmtTps(metrics?.inferenceTps, running)}
         </Text>
       </Flex>
     </FooterBar>

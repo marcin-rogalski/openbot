@@ -538,22 +538,41 @@ pub fn prompt_section(catalog: &[ResolvedTool]) -> String {
     section
 }
 
+/// One progress report from a long-running tool: a human-readable `label` (the
+/// left-side status / Discord message) plus an optional short `detail` — a
+/// quantitative note like "42%" shown on the right side of the app footer.
+pub struct ProgressUpdate {
+    pub label: String,
+    pub detail: Option<String>,
+}
+
 /// Run a resolved tool call; returns a result string (ok or `error: …`).
-/// A sink for human-readable progress messages from a long-running tool, shown
-/// live on Discord. `report` is a no-op when there's no receiver.
+/// A sink for progress reports from a long-running tool, shown live on Discord
+/// and in the app footer. `report`/`report_with` are no-ops when there's no
+/// receiver.
 #[derive(Clone)]
-pub struct Progress(Option<tokio::sync::mpsc::UnboundedSender<String>>);
+pub struct Progress(Option<tokio::sync::mpsc::UnboundedSender<ProgressUpdate>>);
 
 impl Progress {
     /// A reporter plus the receiver `discord.rs` drains to edit the status message.
-    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<ProgressUpdate>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (Progress(Some(tx)), rx)
     }
 
-    pub fn report(&self, msg: impl Into<String>) {
+    /// Report a status label with no quantitative detail.
+    pub fn report(&self, label: impl Into<String>) {
+        self.send(label.into(), None);
+    }
+
+    /// Report a status label plus a short right-side detail (e.g. "42%").
+    pub fn report_with(&self, label: impl Into<String>, detail: impl Into<String>) {
+        self.send(label.into(), Some(detail.into()));
+    }
+
+    fn send(&self, label: String, detail: Option<String>) {
         if let Some(tx) = &self.0 {
-            let _ = tx.send(msg.into());
+            let _ = tx.send(ProgressUpdate { label, detail });
         }
     }
 }
@@ -1097,12 +1116,15 @@ pub async fn run_transcription(
             &bot.id,
             format!("transcribe_link: chunk {}/{n}…", i + 1),
         );
-        progress.report(format!(
-            "🎙️ Transcribing \"{}\" — chunk {}/{n} (~{} min in)…",
-            meta.name,
-            i + 1,
-            (i as u32 * crate::audio::CHUNK_SECS) / 60
-        ));
+        progress.report_with(
+            format!(
+                "🎙️ Transcribing \"{}\" — chunk {}/{n} (~{} min in)…",
+                meta.name,
+                i + 1,
+                (i as u32 * crate::audio::CHUNK_SECS) / 60
+            ),
+            format!("{}%", (i + 1) * 100 / n),
+        );
         let Ok(bytes) = std::fs::read(chunk) else {
             continue;
         };
@@ -1315,10 +1337,13 @@ async fn reindex(
             continue;
         }
         seen += 1;
-        progress.report(format!(
-            "🔄 Rebuilding the knowledge index — {seen}/{total}: \"{}\"",
-            f.name
-        ));
+        progress.report_with(
+            format!(
+                "🔄 Rebuilding the knowledge index — {seen}/{total}: \"{}\"",
+                f.name
+            ),
+            format!("{}%", seen * 100 / total.max(1)),
+        );
         if knowledge::has_source(app, instance_id, &f.id)
             .await
             .unwrap_or(false)

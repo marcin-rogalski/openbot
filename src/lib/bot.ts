@@ -88,16 +88,24 @@ export function useRunningBots(): Set<string> {
   return running
 }
 
-/** Per-bot activity label from `bot://busy` — a short string while the bot works
- * (inference or a tool, e.g. "🔎 Searching the web…"), absent when idle. */
-export function useBusyLabels(): Map<string, string> {
-  const [labels, setLabels] = useState<Map<string, string>>(new Map())
+/** A bot's live activity: `label` (left side, e.g. "🔎 Searching the web…") plus
+ * an optional `detail` (right side, e.g. tool progress "42%"). */
+export type BusyState = { label: string; detail: string | null }
+
+/** Per-bot activity from `bot://busy`; a bot is absent from the map when idle. */
+export function useBusyState(): Map<string, BusyState> {
+  const [state, setState] = useState<Map<string, BusyState>>(new Map())
 
   useEffect(() => {
-    const unlisten = listen<{ botId: string; label: string | null }>(BUSY_EVENT, (e) => {
-      setLabels((prev) => {
+    const unlisten = listen<{
+      botId: string
+      label: string | null
+      detail: string | null
+    }>(BUSY_EVENT, (e) => {
+      setState((prev) => {
         const next = new Map(prev)
-        if (e.payload.label) next.set(e.payload.botId, e.payload.label)
+        if (e.payload.label)
+          next.set(e.payload.botId, { label: e.payload.label, detail: e.payload.detail })
         else next.delete(e.payload.botId)
         return next
       })
@@ -107,7 +115,7 @@ export function useBusyLabels(): Map<string, string> {
     }
   }, [])
 
-  return labels
+  return state
 }
 
 /** Per-bot activity feeds, accumulated from `bot://activity`; live model-call

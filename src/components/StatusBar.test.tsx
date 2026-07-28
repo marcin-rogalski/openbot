@@ -7,6 +7,7 @@ import { Provider } from "./ui/provider"
 function renderSB(props: {
   running: boolean
   busy?: string | null
+  detail?: string | null
   metrics?: MetricsData
 }) {
   return render(
@@ -46,5 +47,17 @@ describe("StatusBar", () => {
   it("shows em dash for speed when stopped", () => {
     renderSB({ running: false, metrics: { prefillTps: null, inferenceTps: 42 } })
     expect(screen.getByText(/—/)).toBeInTheDocument()
+  })
+
+  it("shows tool progress on the right, over speed, when a detail is set", () => {
+    renderSB({
+      running: true,
+      busy: "🎙️ Transcribing…",
+      detail: "42%",
+      metrics: { prefillTps: null, inferenceTps: 42 },
+    })
+    expect(screen.getByText("progress")).toBeInTheDocument()
+    expect(screen.getByText("42%")).toBeInTheDocument()
+    expect(screen.queryByText(/tok\/s/)).not.toBeInTheDocument()
   })
 })

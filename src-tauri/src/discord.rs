@@ -198,7 +198,7 @@ impl Handler {
             humanize(&msg.content, &msg.mentions, bot_id, bot_name),
         );
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
-        bot::emit_busy(&self.app, &self.bot_id, Some("💭 Thinking…"));
+        bot::emit_busy(&self.app, &self.bot_id, Some("💭 Thinking…"), None);
         // Live progress message in the channel — edited as the bot works and
         // finally rewritten into the answer.
         let mut status = msg.channel_id.say(&ctx.http, "💭 Thinking…").await.ok();
@@ -307,7 +307,7 @@ impl Handler {
                 break;
             }
         }
-        bot::emit_busy(&self.app, &self.bot_id, None);
+        bot::emit_busy(&self.app, &self.bot_id, None, None);
         self.refresh_window(msg);
     }
 
@@ -383,7 +383,8 @@ impl Handler {
                     r = &mut exec => break r,
                     Some(update) = rx.recv() => {
                         if last_edit.elapsed() >= Duration::from_millis(1500) {
-                            self.set_status(ctx, status, &update).await;
+                            self.set_progress(ctx, status, &update.label, update.detail.as_deref())
+                                .await;
                             last_edit = Instant::now();
                         }
                     }
@@ -409,14 +410,31 @@ impl Handler {
     /// Update the live progress message in the channel (no-op if it wasn't
     /// posted) and mirror the same label to the app status bar, so the desktop
     /// UI shows what the bot is doing (e.g. "🔎 Searching the web…") rather than
-    /// a bare "working" flag.
+    /// a bare "working" flag. Clears any right-side progress detail.
     async fn set_status(&self, ctx: &Context, status: &mut Option<Message>, text: &str) {
-        bot::emit_busy(&self.app, &self.bot_id, Some(text));
+        self.set_progress(ctx, status, text, None).await;
+    }
+
+    /// Like `set_status`, but also carries a short quantitative `detail` (e.g.
+    /// "42%") to the right side of the app footer, and appends it to the Discord
+    /// message. Used to surface tool progress.
+    async fn set_progress(
+        &self,
+        ctx: &Context,
+        status: &mut Option<Message>,
+        label: &str,
+        detail: Option<&str>,
+    ) {
+        bot::emit_busy(&self.app, &self.bot_id, Some(label), detail);
+        let text = match detail {
+            Some(d) => format!("{label} — {d}"),
+            None => label.to_string(),
+        };
         if let Some(m) = status.as_mut() {
             let _ = m
                 .edit(
                     &ctx.http,
-                    EditMessage::new().content(truncate(text, DISCORD_MAX)),
+                    EditMessage::new().content(truncate(&text, DISCORD_MAX)),
                 )
                 .await;
         }
@@ -477,10 +495,17 @@ impl Handler {
                 tokio::select! {
                     r = &mut job => break r,
                     Some(update) = rx.recv() => {
+                        // Background job: drive the app footer directly (the main
+                        // reply loop already went idle when this was spawned).
+                        bot::emit_busy(&app, &bot_id, Some(&update.label), update.detail.as_deref());
                         if last.elapsed() >= Duration::from_millis(1500) {
                             if let Some(m) = status.as_mut() {
+                                let text = match &update.detail {
+                                    Some(d) => format!("{} — {d}", update.label),
+                                    None => update.label.clone(),
+                                };
                                 let _ = m
-                                    .edit(&http, EditMessage::new().content(truncate(&update, DISCORD_MAX)))
+                                    .edit(&http, EditMessage::new().content(truncate(&text, DISCORD_MAX)))
                                     .await;
                             }
                             last = Instant::now();
@@ -519,6 +544,7 @@ impl Handler {
                     }
                 }
             }
+            bot::emit_busy(&app, &bot_id, None, None);
         });
 
         "🎙️ Started transcribing in the background — I'll post the transcript in this channel \
@@ -603,7 +629,7 @@ impl Handler {
             return out;
         }
 
-        bot::emit_busy(&self.app, &self.bot_id, Some("🎙️ Transcribing…"));
+        bot::emit_busy(&self.app, &self.bot_id, Some("🎙️ Transcribing…"), None);
         let drive_sink = self
             .sinks
             .iter()
@@ -784,7 +810,7 @@ impl Handler {
             ));
         }
 
-        bot::emit_busy(&self.app, &self.bot_id, None);
+        bot::emit_busy(&self.app, &self.bot_id, None, None);
         out
     }
 
@@ -946,10 +972,11 @@ impl Handler {
             &self.app,
             &self.bot_id,
             Some("🎙️ Wrapping up — preparing the transcript…"),
+            None,
         );
 
         let Some(rendered) = meeting.render().await else {
-            bot::emit_busy(&self.app, &self.bot_id, None);
+            bot::emit_busy(&self.app, &self.bot_id, None, None);
             let _ = text_channel
                 .say(&ctx.http, "I didn't capture any speech to transcribe.")
                 .await;
@@ -1025,7 +1052,7 @@ impl Handler {
             )
             .await;
         }
-        bot::emit_busy(&self.app, &self.bot_id, None);
+        bot::emit_busy(&self.app, &self.bot_id, None, None);
     }
 
     fn build_messages(
