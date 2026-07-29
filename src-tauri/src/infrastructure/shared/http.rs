@@ -10,7 +10,7 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .unwrap_or_default()
 });
 
-/// The shared HTTP client. Call `compose::shared::compose_shared` once at startup
+/// The shared HTTP client. Call `compose::commons::init` once at startup
 /// to warm it before first use.
 pub fn client() -> reqwest::Client {
     CLIENT.clone()

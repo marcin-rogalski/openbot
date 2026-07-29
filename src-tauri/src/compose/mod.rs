@@ -1,15 +1,9 @@
-//! Composition helpers. As the project grows these split into `compose_*` units —
-//! `compose_shared` (cross-cutting infra) runs **first**, then driven adapters,
-//! services, and driving adapters as those layers gain startup-composed parts.
-//! Credentialed per-instance adapters (e.g. web search) are composed on demand —
-//! see `compose_search_web`.
+//! Composition root — the only place that names concrete adapters and wires them
+//! into usecases. Organized **by type**, in dependency order:
+//! `commons` (shared singletons) → `driven` (outbound adapters) →
+//! `driving` (usecases the inbound side calls). `main.rs` calls `commons::init()`
+//! at startup; the per-instance builders in `driven`/`driving` run on demand.
 
-pub mod chat;
-pub mod drive;
-pub mod fetch_page;
-pub mod ingestion;
-pub mod knowledge;
-pub mod memory;
-pub mod search_web;
-pub mod shared;
-pub mod transcription;
+pub mod commons;
+pub mod driven;
+pub mod driving;

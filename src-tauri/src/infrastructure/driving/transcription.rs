@@ -5,9 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::compose::transcription::{
-    compose_audio_codec, compose_summarizer, compose_transcribe_clip, compose_transcriber,
-};
+use crate::compose::{driven, driving};
 use crate::domain::transcript::Transcript;
 use crate::infrastructure::config::BotConfig;
 
@@ -18,7 +16,7 @@ pub async fn transcribe_clip(
     filename: &str,
     mime: &str,
 ) -> Result<Transcript, String> {
-    compose_transcribe_clip(bot)
+    driving::transcribe_clip(bot)
         .run(bytes, filename, mime)
         .await
 }
@@ -41,7 +39,7 @@ pub async fn transcribe_recording(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let (chunks, truncated) = compose_audio_codec()
+    let (chunks, truncated) = driven::audio_codec()
         .split_to_wav_chunks(
             source.to_path_buf(),
             filename.to_string(),
@@ -53,7 +51,7 @@ pub async fn transcribe_recording(
         .await?;
     let _ = std::fs::remove_file(source); // no longer needed once split
 
-    let transcriber = compose_transcriber(bot);
+    let transcriber = driven::transcriber(bot);
     let n = chunks.len();
     let mut transcript = Transcript::default();
     for (i, chunk) in chunks.iter().enumerate() {
@@ -75,7 +73,7 @@ pub async fn transcribe_recording(
 /// Transcribe an already-WAV clip to plain text; `None` on failure or silence.
 /// Used by the voice path, which produces WAV directly (no decode needed).
 pub async fn transcribe_wav_text(bot: &BotConfig, wav: Vec<u8>) -> Option<String> {
-    let segments = compose_transcriber(bot)
+    let segments = driven::transcriber(bot)
         .transcribe(wav, "utterance.wav", "audio/wav")
         .await
         .ok()?;
@@ -92,7 +90,7 @@ pub async fn transcribe_wav_text(bot: &BotConfig, wav: Vec<u8>) -> Option<String
 /// Summarise a transcript; on failure returns a placeholder note (never errors,
 /// so a failed summary doesn't sink the whole transcription).
 pub async fn summarize(bot: &BotConfig, plain: &str) -> String {
-    compose_summarizer(bot)
+    driven::summarizer(bot)
         .summarize(plain)
         .await
         .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"))

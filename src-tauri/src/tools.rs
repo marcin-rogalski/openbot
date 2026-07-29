@@ -626,7 +626,7 @@ pub async fn execute(
             ..
         } => {
             let (cid, secret, folder) = (client_id, client_secret, folder_id);
-            let storage = crate::compose::drive::compose_drive_storage(app, cid, secret, folder);
+            let storage = crate::compose::driven::drive_storage(app, cid, secret, folder);
             use crate::infrastructure::driving::drive as drive_ui;
             match op {
                 DriveOp::Search => drive_ui::search(&*storage, &arg("query")).await,
@@ -912,7 +912,7 @@ pub async fn run_transcription(
     for (fname, content) in &files {
         match gdrive::create(app, client_id, client_secret, folder, fname, content).await {
             Ok(fid) => {
-                let _ = crate::compose::ingestion::compose_index_document(app, bot, instance_id)
+                let _ = crate::compose::driving::index_document(app, bot, instance_id)
                     .run(&fid, fname, "text/markdown", content)
                     .await;
             }

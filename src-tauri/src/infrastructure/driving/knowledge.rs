@@ -5,9 +5,7 @@
 use tauri::AppHandle;
 
 use crate::application::usecases::reindex_knowledge::ReindexProgress;
-use crate::compose::knowledge::{
-    compose_ask_knowledge, compose_knowledge_index, compose_reindex_knowledge,
-};
+use crate::compose::{driven, driving};
 use crate::domain::knowledge::KnowledgePassage;
 use crate::infrastructure::bot;
 use crate::infrastructure::config::BotConfig;
@@ -22,7 +20,7 @@ pub async fn ask(
     question: &str,
     k: usize,
 ) -> String {
-    match compose_ask_knowledge(app, bot, instance_id)
+    match driving::ask_knowledge(app, bot, instance_id)
         .run(question, k)
         .await
     {
@@ -36,7 +34,7 @@ pub async fn ask(
 
 /// List the files currently in the knowledge index.
 pub async fn list_sources(app: &AppHandle, instance_id: &str) -> String {
-    match compose_knowledge_index(app, instance_id)
+    match driven::knowledge_index(app, instance_id)
         .list_sources()
         .await
     {
@@ -69,7 +67,7 @@ pub async fn reindex(
     bot::emit_log(app, &bot.id, "reindex: scanning Drive…");
     progress.report("🔄 Rebuilding the knowledge index — scanning Drive…");
 
-    let uc = compose_reindex_knowledge(app, bot, instance_id, client_id, client_secret, folder_id);
+    let uc = driving::reindex_knowledge(app, bot, instance_id, client_id, client_secret, folder_id);
     let report = |p: ReindexProgress| {
         progress.report_with(
             format!(

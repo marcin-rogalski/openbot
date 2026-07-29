@@ -132,7 +132,7 @@ impl Handler {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let summary = match crate::compose::chat::compose_chat_model(&self.bot)
+        let summary = match crate::compose::driven::chat_model(&self.bot)
             .summarize_conversation(&previous, &text)
             .await
         {
@@ -217,7 +217,7 @@ impl Handler {
         let mut final_text: Option<String> = None;
         let mut error: Option<String> = None;
         let mut sources: Vec<String> = Vec::new();
-        let chat_model = crate::compose::chat::compose_chat_model(&self.bot);
+        let chat_model = crate::compose::driven::chat_model(&self.bot);
 
         for iter in 0..MAX_TOOL_ITERS {
             if iter > 0 {
@@ -1202,7 +1202,7 @@ impl EventHandler for Handler {
             let recent = &history[..history.len().min(RAW_WINDOW)];
             let context = render_context(recent, bot_user_id);
             bot::emit_log(&self.app, &self.bot_id, "follow-up: checking relevance…");
-            let engage = crate::compose::chat::compose_chat_model(&self.bot)
+            let engage = crate::compose::driven::chat_model(&self.bot)
                 .should_engage(&context, &msg.content)
                 .await;
             bot::emit_log(

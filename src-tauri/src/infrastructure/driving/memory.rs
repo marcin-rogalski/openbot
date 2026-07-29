@@ -7,7 +7,7 @@
 
 use tauri::AppHandle;
 
-use crate::compose::memory::{compose_memory_store, compose_save_memory};
+use crate::compose::{driven, driving};
 use crate::domain::memory::{Memory, MemoryKind};
 use crate::infrastructure::bot;
 use crate::infrastructure::config;
@@ -21,7 +21,7 @@ pub async fn save(app: &AppHandle, bot_id: &str, kind: &str, text: &str) -> Stri
     let kind = MemoryKind::parse(kind);
     let Some(bot) = config::load_bot(app, bot_id) else {
         // No bot config: best-effort append without budget enforcement.
-        let store = compose_memory_store(app, bot_id);
+        let store = driven::memory_store(app, bot_id);
         let Some(text) = crate::domain::memory::sanitize_text(text) else {
             return "error: empty memory".to_string();
         };
@@ -31,7 +31,7 @@ pub async fn save(app: &AppHandle, bot_id: &str, kind: &str, text: &str) -> Stri
         return format!("saved {}", kind.as_str());
     };
 
-    match compose_save_memory(app, &bot).run(kind, text).await {
+    match driving::save_memory(app, &bot).run(kind, text).await {
         Ok(outcome) => {
             if let Some((before, after)) = outcome.consolidated {
                 bot::emit_log(
@@ -48,7 +48,7 @@ pub async fn save(app: &AppHandle, bot_id: &str, kind: &str, text: &str) -> Stri
 
 /// Delete a memory by id (tool loop).
 pub fn delete(app: &AppHandle, bot_id: &str, id: &str) {
-    let store = compose_memory_store(app, bot_id);
+    let store = driven::memory_store(app, bot_id);
     let mut memories = store.load();
     memories.retain(|m| m.id != id);
     store.store_all(&memories);
@@ -57,7 +57,7 @@ pub fn delete(app: &AppHandle, bot_id: &str, id: &str) {
 // --- Read helper (prompt building, attachment gate) -------------------------
 
 pub fn load(app: &AppHandle, bot_id: &str) -> Vec<Memory> {
-    compose_memory_store(app, bot_id).load()
+    driven::memory_store(app, bot_id).load()
 }
 
 // --- Prompt / gate presentation ---------------------------------------------
@@ -114,7 +114,7 @@ pub fn delete_memory(app: AppHandle, bot_id: String, id: String) {
 
 #[tauri::command]
 pub fn clear_memories(app: AppHandle, bot_id: String) {
-    compose_memory_store(&app, &bot_id).store_all(&[]);
+    driven::memory_store(&app, &bot_id).store_all(&[]);
 }
 
 #[cfg(test)]

@@ -7,10 +7,7 @@ use tauri::AppHandle;
 
 use crate::application::services::foldering;
 use crate::application::usecases::archive_attachment::ArchiveOutcome;
-use crate::compose::drive::compose_drive_storage;
-use crate::compose::ingestion::{
-    compose_archive_attachment, compose_archive_policy, compose_index_document,
-};
+use crate::compose::{driven, driving};
 use crate::infrastructure::bot;
 use crate::infrastructure::config::BotConfig;
 use crate::tools::{AttachmentRef, AttachmentSink};
@@ -43,7 +40,8 @@ pub async fn deliver_attachment(
         folder_id,
     } = sink;
 
-    let uc = compose_archive_attachment(app, bot, instance_id, client_id, client_secret, folder_id);
+    let uc =
+        driving::archive_attachment(app, bot, instance_id, client_id, client_secret, folder_id);
     match uc
         .run(
             &guidance(app, bot),
@@ -110,8 +108,8 @@ pub async fn store_text_artifact(
         folder_id,
     } = sink;
 
-    let drive = compose_drive_storage(app, client_id, client_secret, folder_id);
-    let policy = compose_archive_policy(bot);
+    let drive = driven::drive_storage(app, client_id, client_secret, folder_id);
+    let policy = driven::archive_policy(bot);
     let target =
         foldering::choose_folder(&*drive, &*policy, &guidance(app, bot), context, filename).await;
 
@@ -128,7 +126,7 @@ pub async fn store_text_artifact(
         format!("store_artifact {{name={filename:?}, to={instance_name:?}}} → id={drive_id}"),
         format!("💾 Saved \"{filename}\" to {instance_name}"),
     );
-    let _ = compose_index_document(app, bot, instance_id)
+    let _ = driving::index_document(app, bot, instance_id)
         .run(&drive_id, filename, "text/markdown", content)
         .await;
     Some(drive_id)
@@ -144,7 +142,7 @@ pub async fn save_link(
     folder: &str,
     url: &str,
 ) -> String {
-    let drive = compose_drive_storage(app, client_id, client_secret, folder);
+    let drive = driven::drive_storage(app, client_id, client_secret, folder);
     let meta = match drive.file_meta(url).await {
         Ok(m) => m,
         Err(e) => {
@@ -160,7 +158,7 @@ pub async fn save_link(
     };
     let mut note = format!("saved \"{}\" to the folder (id={new_id})", meta.name);
     if let Ok(text) = drive.read(&new_id).await {
-        let _ = compose_index_document(app, bot, instance_id)
+        let _ = driving::index_document(app, bot, instance_id)
             .run(&new_id, &meta.name, &meta.mime_type, &text)
             .await;
         note.push_str(" and indexed it into the knowledge base");

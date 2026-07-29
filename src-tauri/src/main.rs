@@ -23,7 +23,7 @@ fn main() {
         .manage(bot::BotManager::new())
         .setup(|app| {
             // Shared infrastructure first (HTTP client, later logger/fs).
-            compose::shared::compose_shared();
+            compose::commons::init();
             #[cfg(target_os = "macos")]
             os::macos::intercept_quit_apple_event();
             // Migrate the old single config into { global, bots } if needed, so

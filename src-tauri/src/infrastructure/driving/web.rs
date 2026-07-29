@@ -6,7 +6,7 @@
 
 /// Search the web; returns a compact, model-friendly result list.
 pub async fn search(api_key: &str, query: &str) -> Result<String, String> {
-    let hits = crate::compose::search_web::compose_search_web(api_key)
+    let hits = crate::compose::driving::search_web(api_key)
         .run(query)
         .await?;
     if hits.is_empty() {
@@ -21,7 +21,7 @@ pub async fn search(api_key: &str, query: &str) -> Result<String, String> {
 
 /// Fetch a page and return its extracted markdown content (truncated).
 pub async fn fetch(api_key: &str, url: &str) -> Result<String, String> {
-    let page = crate::compose::fetch_page::compose_fetch_page(api_key)
+    let page = crate::compose::driving::fetch_page(api_key)
         .run(url)
         .await?;
     match page.title {
