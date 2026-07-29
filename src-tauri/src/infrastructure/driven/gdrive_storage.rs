@@ -115,4 +115,57 @@ impl DriveStorage for GDriveStorage {
     async fn trash(&self, id: &str) -> Result<(), String> {
         gdrive::trash(&self.app, &self.client_id, &self.client_secret, id).await
     }
+
+    async fn list_folders(&self) -> Result<Vec<DriveEntry>, String> {
+        let folders = gdrive::list_folders(
+            &self.app,
+            &self.client_id,
+            &self.client_secret,
+            &self.folder_id,
+        )
+        .await?;
+        Ok(folders.into_iter().map(to_entry).collect())
+    }
+
+    async fn upload_binary(
+        &self,
+        parent: &str,
+        name: &str,
+        bytes: Vec<u8>,
+        mime: &str,
+    ) -> Result<String, String> {
+        gdrive::upload_binary(
+            &self.app,
+            &self.client_id,
+            &self.client_secret,
+            parent,
+            name,
+            bytes,
+            mime,
+        )
+        .await
+    }
+
+    async fn file_meta(&self, id_or_link: &str) -> Result<DriveEntry, String> {
+        let id = gdrive::file_id_from_link(id_or_link);
+        let meta = gdrive::file_meta(&self.app, &self.client_id, &self.client_secret, &id).await?;
+        Ok(to_entry(meta))
+    }
+
+    async fn copy_into(&self, id_or_link: &str, dest: &str) -> Result<String, String> {
+        let id = gdrive::file_id_from_link(id_or_link);
+        gdrive::copy_to(
+            &self.app,
+            &self.client_id,
+            &self.client_secret,
+            &id,
+            dest,
+            None,
+        )
+        .await
+    }
+
+    fn folder_id(&self) -> &str {
+        &self.folder_id
+    }
 }

@@ -607,7 +607,10 @@ impl Handler {
             }
             let att = attachment_ref(attachment);
             for sink in &self.sinks {
-                tools::deliver_attachment(&self.app, &self.bot, sink, &att, &context).await;
+                crate::infrastructure::driving::ingestion::deliver_attachment(
+                    &self.app, &self.bot, sink, &att, &context,
+                )
+                .await;
             }
         }
     }
@@ -773,7 +776,7 @@ impl Handler {
                     "audio transcript from Discord, posted by {}",
                     msg.author.name
                 );
-                tools::store_text_artifact(
+                crate::infrastructure::driving::ingestion::store_text_artifact(
                     &self.app,
                     &self.bot,
                     sink,
@@ -782,7 +785,7 @@ impl Handler {
                     &context,
                 )
                 .await;
-                tools::store_text_artifact(
+                crate::infrastructure::driving::ingestion::store_text_artifact(
                     &self.app,
                     &self.bot,
                     sink,
@@ -833,7 +836,11 @@ impl Handler {
             for attachment in m.attachments.iter().take(MAX_ATTACHMENTS) {
                 let att = attachment_ref(attachment);
                 let context = format!("{}: {}", m.author.name, m.content);
-                if tools::deliver_attachment(&self.app, &self.bot, &sink, &att, &context).await {
+                if crate::infrastructure::driving::ingestion::deliver_attachment(
+                    &self.app, &self.bot, &sink, &att, &context,
+                )
+                .await
+                {
                     archived += 1;
                 }
             }
@@ -1022,7 +1029,7 @@ impl Handler {
             .find(|s| matches!(s, AttachmentSink::Drive { .. }))
         {
             let context = "meeting transcript from a Discord voice channel";
-            tools::store_text_artifact(
+            crate::infrastructure::driving::ingestion::store_text_artifact(
                 &self.app,
                 &self.bot,
                 sink,
@@ -1031,7 +1038,7 @@ impl Handler {
                 context,
             )
             .await;
-            tools::store_text_artifact(
+            crate::infrastructure::driving::ingestion::store_text_artifact(
                 &self.app,
                 &self.bot,
                 sink,

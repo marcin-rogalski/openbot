@@ -65,12 +65,6 @@ fn is_text(mime: &str, ext: &str) -> bool {
     TEXT_EXTS.contains(&ext)
 }
 
-/// Split extracted text into embed-ready chunks. Delegates to the chunking
-/// service (the algorithm is provider-agnostic application logic).
-pub fn chunk(text: &str) -> Vec<String> {
-    crate::application::services::chunking::chunk(text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,3 +3,4 @@
 //! registry, and the tool `Ctx`.
 
 pub mod chunking;
+pub mod foldering;

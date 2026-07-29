@@ -4,6 +4,7 @@
 //! modules.
 
 pub mod drive;
+pub mod ingestion;
 pub mod knowledge;
 pub mod memory;
 pub mod transcription;

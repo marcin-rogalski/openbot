@@ -14,10 +14,9 @@ use std::collections::HashSet;
 use serde_json::Value;
 use tauri::AppHandle;
 
+use crate::bot;
 use crate::config::{self, BotConfig, GlobalConfig};
 use crate::gdrive;
-use crate::knowledge::{self, SourceMeta};
-use crate::{bot, ingest, model};
 
 /// Fixed instance id for the per-bot memory tools.
 const MEMORY_INSTANCE: &str = "memory";
@@ -658,7 +657,7 @@ pub async fn execute(
                     let Some(bot) = config::load_bot(app, bot_id) else {
                         return "error: bot config not found".to_string();
                     };
-                    save_link(
+                    crate::infrastructure::driving::ingestion::save_link(
                         app,
                         &bot,
                         &tool.instance_id,
@@ -749,241 +748,6 @@ pub fn attachment_sinks(global: &GlobalConfig, bot: &BotConfig) -> Vec<Attachmen
         }
     }
     sinks
-}
-
-/// Deliver one attachment to one subscribed sink. The Drive sink runs the
-/// intent gate (message context + the bot's standing rules) and, on "yes",
-/// downloads the file from Discord and uploads it. Returns whether it archived.
-pub async fn deliver_attachment(
-    app: &AppHandle,
-    bot: &BotConfig,
-    sink: &AttachmentSink,
-    att: &AttachmentRef,
-    context: &str,
-) -> bool {
-    match sink {
-        AttachmentSink::Drive {
-            instance_id,
-            instance_name,
-            client_id,
-            client_secret,
-            folder_id,
-        } => {
-            let guidance = if bot.memory_enabled {
-                crate::infrastructure::driving::memory::guidance(
-                    &crate::infrastructure::driving::memory::load(app, &bot.id),
-                )
-            } else {
-                String::new()
-            };
-            let grab =
-                model::should_archive(bot, &guidance, context, &att.filename, &att.content_type)
-                    .await;
-            if !grab {
-                bot::emit_log(
-                    app,
-                    &bot.id,
-                    format!("attachment \"{}\": skipped (not relevant)", att.filename),
-                );
-                return false;
-            }
-
-            let bytes = match download(&att.url).await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    bot::emit_log(
-                        app,
-                        &bot.id,
-                        format!("attachment \"{}\": download failed: {e}", att.filename),
-                    );
-                    return false;
-                }
-            };
-
-            // Parse text now (before `bytes` is moved into the upload); PDF
-            // parsing is CPU-bound, so keep it off the async runtime.
-            let extracted = {
-                let extract_bytes = bytes.clone();
-                let filename = att.filename.clone();
-                let mime = att.content_type.clone();
-                tokio::task::spawn_blocking(move || {
-                    ingest::extract_text(&extract_bytes, &filename, &mime)
-                })
-                .await
-                .ok()
-                .flatten()
-            };
-
-            // Semantic foldering: pick a subfolder (rule-guided), else the root.
-            let target = choose_folder(
-                app,
-                bot,
-                &guidance,
-                context,
-                client_id,
-                client_secret,
-                folder_id,
-                &att.filename,
-            )
-            .await;
-
-            let drive_id = match gdrive::upload_binary(
-                app,
-                client_id,
-                client_secret,
-                &target,
-                &att.filename,
-                bytes,
-                &att.content_type,
-            )
-            .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    bot::emit_log(
-                        app,
-                        &bot.id,
-                        format!("attachment \"{}\": archive failed: {e}", att.filename),
-                    );
-                    return false;
-                }
-            };
-            bot::emit_tool_activity(
-                app,
-                &bot.id,
-                format!(
-                    "archive_attachment {{name={:?}, to={:?}}} → id={drive_id}",
-                    att.filename, instance_name
-                ),
-                format!("📎 Archived \"{}\" to {}", att.filename, instance_name),
-            );
-
-            // Index into the local knowledge base (best-effort).
-            if let Some(text) = extracted {
-                index_text(
-                    app,
-                    bot,
-                    instance_id,
-                    &drive_id,
-                    &att.filename,
-                    &att.content_type,
-                    &text,
-                )
-                .await;
-            }
-            true
-        }
-    }
-}
-
-/// Store a bot-generated text file (e.g. a transcript or its summary) into a
-/// Drive sink's folder and index it into the knowledge base. Returns the new
-/// Drive file id. Best-effort; logs and returns `None` on failure.
-pub async fn store_text_artifact(
-    app: &AppHandle,
-    bot: &BotConfig,
-    sink: &AttachmentSink,
-    filename: &str,
-    content: &str,
-    context: &str,
-) -> Option<String> {
-    let AttachmentSink::Drive {
-        instance_id,
-        instance_name,
-        client_id,
-        client_secret,
-        folder_id,
-    } = sink;
-
-    let guidance = if bot.memory_enabled {
-        crate::infrastructure::driving::memory::guidance(
-            &crate::infrastructure::driving::memory::load(app, &bot.id),
-        )
-    } else {
-        String::new()
-    };
-    let target = choose_folder(
-        app,
-        bot,
-        &guidance,
-        context,
-        client_id,
-        client_secret,
-        folder_id,
-        filename,
-    )
-    .await;
-
-    let drive_id =
-        match gdrive::create(app, client_id, client_secret, &target, filename, content).await {
-            Ok(id) => id,
-            Err(e) => {
-                bot::emit_log(app, &bot.id, format!("store \"{filename}\": failed: {e}"));
-                return None;
-            }
-        };
-    bot::emit_tool_activity(
-        app,
-        &bot.id,
-        format!("store_artifact {{name={filename:?}, to={instance_name:?}}} → id={drive_id}"),
-        format!("💾 Saved \"{filename}\" to {instance_name}"),
-    );
-    index_text(
-        app,
-        bot,
-        instance_id,
-        &drive_id,
-        filename,
-        "text/markdown",
-        content,
-    )
-    .await;
-    Some(drive_id)
-}
-
-/// Copy a Drive file (from a link/id) into the tool's folder and index it.
-#[allow(clippy::too_many_arguments)]
-async fn save_link(
-    app: &AppHandle,
-    bot: &BotConfig,
-    instance_id: &str,
-    client_id: &str,
-    client_secret: &str,
-    folder: &str,
-    url: &str,
-) -> String {
-    let id = gdrive::file_id_from_link(url);
-    if id.trim().is_empty() {
-        return "error: no Google Drive link or id provided".to_string();
-    }
-    let meta = match gdrive::file_meta(app, client_id, client_secret, &id).await {
-        Ok(m) => m,
-        Err(e) => {
-            return format!(
-                "error: can't access that link ({e}). It must be shared with this bot's Google \
-                 account (or set to 'anyone with the link')."
-            )
-        }
-    };
-    let new_id = match gdrive::copy_to(app, client_id, client_secret, &id, folder, None).await {
-        Ok(nid) => nid,
-        Err(e) => return format!("error: couldn't copy the file: {e}"),
-    };
-    let mut note = format!("saved \"{}\" to the folder (id={new_id})", meta.name);
-    if let Ok(text) = gdrive::read(app, client_id, client_secret, &new_id).await {
-        index_text(
-            app,
-            bot,
-            instance_id,
-            &new_id,
-            &meta.name,
-            &meta.mime_type,
-            &text,
-        )
-        .await;
-        note.push_str(" and indexed it into the knowledge base");
-    }
-    note
 }
 
 /// Transcribe an audio/video Drive file (from a link/id): stream it to disk,
@@ -1120,99 +884,14 @@ pub async fn run_transcription(
     for (fname, content) in &files {
         match gdrive::create(app, client_id, client_secret, folder, fname, content).await {
             Ok(fid) => {
-                index_text(app, bot, instance_id, &fid, fname, "text/markdown", content).await;
+                let _ = crate::compose::ingestion::compose_index_document(app, bot, instance_id)
+                    .run(&fid, fname, "text/markdown", content)
+                    .await;
             }
             Err(e) => bot::emit_log(app, &bot.id, format!("save \"{fname}\": {e}")),
         }
     }
     Ok(files)
-}
-
-/// Pick the best subfolder for a file (rule-guided model classification), or the
-/// root when there are no subfolders / no clear match.
-#[allow(clippy::too_many_arguments)]
-async fn choose_folder(
-    app: &AppHandle,
-    bot: &BotConfig,
-    guidance: &str,
-    context: &str,
-    client_id: &str,
-    client_secret: &str,
-    root: &str,
-    filename: &str,
-) -> String {
-    let subfolders = gdrive::list_folders(app, client_id, client_secret, root)
-        .await
-        .unwrap_or_default();
-    if subfolders.is_empty() {
-        return root.to_string();
-    }
-    let names: Vec<String> = subfolders.iter().map(|f| f.name.clone()).collect();
-    match model::pick_folder(bot, guidance, context, filename, &names).await {
-        Some(name) => subfolders
-            .iter()
-            .find(|f| f.name == name)
-            .map(|f| f.id.clone())
-            .unwrap_or_else(|| root.to_string()),
-        None => root.to_string(),
-    }
-}
-
-/// Chunk + embed + upsert a source into the local index. Best-effort; logs on failure.
-async fn index_text(
-    app: &AppHandle,
-    bot: &BotConfig,
-    instance_id: &str,
-    drive_id: &str,
-    name: &str,
-    mime: &str,
-    text: &str,
-) {
-    let chunks = ingest::chunk(text);
-    if chunks.is_empty() {
-        return;
-    }
-    let embeddings = match model::embed(bot, &chunks).await {
-        Ok(embeddings) => embeddings,
-        Err(e) => {
-            bot::emit_log(
-                app,
-                &bot.id,
-                format!("index: embed failed for \"{name}\": {e}"),
-            );
-            return;
-        }
-    };
-    let paired: Vec<(String, Vec<f32>)> = chunks.into_iter().zip(embeddings).collect();
-    let meta = SourceMeta {
-        drive_id: drive_id.to_string(),
-        name: name.to_string(),
-        mime: mime.to_string(),
-        embed_model: bot.model.embedding_model.clone(),
-    };
-    match knowledge::upsert_source(app, instance_id, meta, paired).await {
-        Ok(()) => bot::emit_log(
-            app,
-            &bot.id,
-            format!("indexed \"{name}\" into the knowledge base"),
-        ),
-        Err(e) => bot::emit_log(app, &bot.id, format!("index failed for \"{name}\": {e}")),
-    }
-}
-
-async fn download(url: &str) -> Result<Vec<u8>, String> {
-    let resp = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    resp.bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| format!("read failed: {e}"))
 }
 
 // --- Helpers ----------------------------------------------------------------
