@@ -94,8 +94,8 @@ pub fn knowledge_index(app: &AppHandle, instance_id: &str) -> Arc<dyn KnowledgeI
 
 // --- Memory store -----------------------------------------------------------
 
-pub fn memory_store(app: &AppHandle, bot_id: &str) -> Arc<dyn MemoryStore> {
-    Arc::new(TauriMemoryStore::new(app.clone(), bot_id.to_string()))
+pub fn memory_store(app: &AppHandle, store_id: &str) -> Arc<dyn MemoryStore> {
+    Arc::new(TauriMemoryStore::new(app.clone(), store_id.to_string()))
 }
 
 // --- Audio / ingestion I/O --------------------------------------------------

@@ -14,7 +14,7 @@ use crate::application::usecases::save_memory::SaveMemory;
 use crate::application::usecases::search_web::SearchWeb;
 use crate::application::usecases::transcribe_clip::TranscribeClip;
 use crate::compose::driven;
-use crate::infrastructure::config::BotConfig;
+use crate::infrastructure::config::{BotConfig, ToolInstance};
 
 pub fn search_web(api_key: &str) -> SearchWeb {
     SearchWeb::new(driven::web_search(api_key))
@@ -54,12 +54,12 @@ pub fn index_document(app: &AppHandle, bot: &BotConfig, instance_id: &str) -> In
     )
 }
 
-pub fn save_memory(app: &AppHandle, bot: &BotConfig) -> SaveMemory {
+pub fn save_memory(app: &AppHandle, bot: &BotConfig, mem: &ToolInstance) -> SaveMemory {
     SaveMemory::new(
-        driven::memory_store(app, &bot.id),
+        driven::memory_store(app, &mem.store_id),
         driven::memory_consolidator(bot),
-        bot.memory_max_notes,
-        bot.memory_char_budget,
+        mem.memory_max_notes,
+        mem.memory_char_budget,
     )
 }
 

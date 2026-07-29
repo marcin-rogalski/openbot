@@ -40,16 +40,19 @@ pub fn manifest() -> ToolManifest {
                 key: "clientId",
                 label: "Client ID",
                 secret: false,
+                number: false,
             },
             ManifestField {
                 key: "clientSecret",
                 label: "Client secret",
                 secret: true,
+                number: false,
             },
             ManifestField {
                 key: "folderId",
                 label: "Folder ID",
                 secret: false,
+                number: false,
             },
         ],
         ops: DriveOp::ALL

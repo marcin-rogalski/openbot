@@ -39,6 +39,8 @@ pub struct ManifestField {
     pub label: &'static str,
     /// Render as a password input.
     pub secret: bool,
+    /// Render as a number input (the `ToolInstance` field is numeric).
+    pub number: bool,
 }
 
 /// One callable op: its suffix, a label, and whether it writes (which sets the

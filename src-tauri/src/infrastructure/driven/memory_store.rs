@@ -1,5 +1,6 @@
-//! Driven adapter: `MemoryStore` backed by the tauri plugin-store, keyed by bot
-//! id. Owns the JSON shape (via `MemoryDto`) and mints ids/timestamps.
+//! Driven adapter: `MemoryStore` backed by the tauri plugin-store, keyed by the
+//! memory instance's `store_id` (so several bots can share one store). Owns the
+//! JSON shape (via `MemoryDto`) and mints ids/timestamps.
 
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
@@ -14,12 +15,12 @@ const MEMORIES_KEY: &str = "memories";
 
 pub struct TauriMemoryStore {
     app: AppHandle,
-    bot_id: String,
+    store_id: String,
 }
 
 impl TauriMemoryStore {
-    pub fn new(app: AppHandle, bot_id: String) -> Self {
-        Self { app, bot_id }
+    pub fn new(app: AppHandle, store_id: String) -> Self {
+        Self { app, store_id }
     }
 }
 
@@ -30,7 +31,7 @@ impl MemoryStore for TauriMemoryStore {
         };
         let dtos: Vec<MemoryDto> = store
             .get(MEMORIES_KEY)
-            .and_then(|v| v.get(&self.bot_id).cloned())
+            .and_then(|v| v.get(&self.store_id).cloned())
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
         dtos.into_iter().map(MemoryDto::into_domain).collect()
@@ -45,7 +46,7 @@ impl MemoryStore for TauriMemoryStore {
             .get(MEMORIES_KEY)
             .unwrap_or_else(|| serde_json::json!({}));
         if let Some(map) = all.as_object_mut() {
-            map.insert(self.bot_id.clone(), serde_json::json!(dtos));
+            map.insert(self.store_id.clone(), serde_json::json!(dtos));
         }
         store.set(MEMORIES_KEY, all);
         let _ = store.save();

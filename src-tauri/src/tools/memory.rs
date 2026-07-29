@@ -1,8 +1,51 @@
-//! The per-bot memory tool: `save` + `delete` ops, executed via the memory
-//! driving adapter.
+//! The memory tool: `save` + `delete` ops, executed via the memory driving
+//! adapter. A global instance (shareable — several bots binding one instance
+//! share its store) that carries the consolidation budget.
 
 use serde_json::Value;
 use tauri::AppHandle;
+
+use super::manifest::{ManifestField, ManifestOp, ToolManifest};
+use crate::infrastructure::config;
+
+/// The persisted `ToolInstance.type` this module handles. No readiness gate —
+/// memory needs no external credentials; binding it is enough.
+pub const KIND: &str = config::KIND_MEMORY;
+
+pub fn manifest() -> ToolManifest {
+    ToolManifest {
+        kind: KIND,
+        label: "Memory",
+        icon: "🧠",
+        oauth: false,
+        config_caption: Some(
+            "The bot saves notes/rules via a tool; they're injected into its prompt and \
+             consolidated when over budget. Bind the same instance to several bots to share it.",
+        ),
+        config_fields: vec![
+            ManifestField {
+                key: "memoryMaxNotes",
+                label: "Max notes",
+                secret: false,
+                number: true,
+            },
+            ManifestField {
+                key: "memoryCharBudget",
+                label: "Char budget",
+                secret: false,
+                number: true,
+            },
+        ],
+        ops: MemoryOp::ALL
+            .iter()
+            .map(|o| ManifestOp {
+                op: o.suffix(),
+                label: o.label(),
+                write: false,
+            })
+            .collect(),
+    }
+}
 
 #[derive(Clone, Copy)]
 pub enum MemoryOp {
@@ -24,6 +67,14 @@ impl MemoryOp {
         match self {
             MemoryOp::Save => "memory_save",
             MemoryOp::Delete => "memory_delete",
+        }
+    }
+
+    /// Short label for the approvals UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            MemoryOp::Save => "Save a memory",
+            MemoryOp::Delete => "Forget a memory",
         }
     }
 

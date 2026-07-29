@@ -17,6 +17,17 @@ pub const STORE_FILE: &str = "settings.json";
 const GLOBAL_KEY: &str = "global";
 const BOTS_KEY: &str = "bots";
 const LEGACY_CONFIG_KEY: &str = "config";
+/// Marker set once the bot-native capability flags (attachments/transcription/
+/// memory) have been migrated into global tool instances + bindings.
+const CAPS_MIGRATED_KEY: &str = "capabilitiesMigrated";
+
+// Canonical `ToolInstance.type` discriminators. Credentialed tools (drive, web)
+// own their own `KIND` in the tools layer; the capability kinds live here because
+// both the tools layer and infrastructure (discord/memory) resolve bindings by
+// them.
+pub const KIND_ATTACHMENTS: &str = "attachments";
+pub const KIND_TRANSCRIPTION: &str = "transcription";
+pub const KIND_MEMORY: &str = "memory";
 
 /// A few pleasant, distinct avatar colors to cycle through for new bots.
 pub const BOT_COLORS: &[&str] = &[
@@ -41,6 +52,11 @@ pub struct ToolInstance {
     pub folder_id: String,
     // Web Search (Keenable): a single API key.
     pub api_key: String,
+    // Memory: consolidation budget + the store key it reads/writes (sharable —
+    // two bots binding the same instance share one store).
+    pub memory_max_notes: u32,
+    pub memory_char_budget: u32,
+    pub store_id: String,
 }
 
 impl Default for ToolInstance {
@@ -53,6 +69,9 @@ impl Default for ToolInstance {
             client_secret: String::new(),
             folder_id: String::new(),
             api_key: String::new(),
+            memory_max_notes: 40,
+            memory_char_budget: 2000,
+            store_id: String::new(),
         }
     }
 }
@@ -68,6 +87,15 @@ pub struct GlobalConfig {
 impl GlobalConfig {
     pub fn tool(&self, id: &str) -> Option<&ToolInstance> {
         self.tools.iter().find(|t| t.id == id)
+    }
+
+    /// The first tool instance of `kind` this bot has bound (enabled). Used to
+    /// resolve capabilities (attachments/transcription/memory) from bindings.
+    pub fn bound<'a>(&'a self, bot: &BotConfig, kind: &str) -> Option<&'a ToolInstance> {
+        bot.enabled_tool_ids
+            .iter()
+            .filter_map(|id| self.tool(id))
+            .find(|t| t.kind == kind)
     }
 }
 
@@ -114,21 +142,6 @@ pub struct BotConfig {
     pub enabled_tool_ids: Vec<String>,
     /// Per-tool policy keyed by `"<toolInstanceId>/<op>"` → allow/ask/deny.
     pub tool_policies: HashMap<String, String>,
-    /// When enabled, the bot gets `memory_save`/`memory_delete` tools and its
-    /// stored memories are injected into the system prompt.
-    pub memory_enabled: bool,
-    /// Consolidate once memories exceed this count …
-    pub memory_max_notes: u32,
-    /// … or this many total characters, whichever comes first.
-    pub memory_char_budget: u32,
-    /// When enabled, attachments posted in conversations the bot takes part in
-    /// are forwarded to subscribed tools (e.g. Drive archiving). Off = no live
-    /// attachment gate (and no per-attachment model calls).
-    pub attachments_enabled: bool,
-    /// When enabled, audio attachments in conversations the bot takes part in are
-    /// transcribed; the bot posts a transcript + summary (and indexes them into
-    /// the knowledge base when a Drive tool is enabled).
-    pub transcription_enabled: bool,
 }
 
 impl Default for BotConfig {
@@ -146,11 +159,6 @@ impl Default for BotConfig {
             followup_window_secs: 180,
             enabled_tool_ids: Vec::new(),
             tool_policies: HashMap::new(),
-            memory_enabled: false,
-            memory_max_notes: 40,
-            memory_char_budget: 2000,
-            attachments_enabled: true,
-            transcription_enabled: true,
         }
     }
 }
@@ -176,6 +184,7 @@ impl BotConfig {
 
 pub fn load_global<R: Runtime>(app: &AppHandle<R>) -> GlobalConfig {
     migrate_if_needed(app);
+    migrate_capabilities(app);
     let Ok(store) = app.store(STORE_FILE) else {
         return GlobalConfig::default();
     };
@@ -187,6 +196,7 @@ pub fn load_global<R: Runtime>(app: &AppHandle<R>) -> GlobalConfig {
 
 pub fn load_bots<R: Runtime>(app: &AppHandle<R>) -> Vec<BotConfig> {
     migrate_if_needed(app);
+    migrate_capabilities(app);
     let Ok(store) = app.store(STORE_FILE) else {
         return Vec::new();
     };
@@ -221,6 +231,112 @@ fn migrate_if_needed<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(v) = serde_json::to_value(&bots) {
         store.set(BOTS_KEY, v);
     }
+    let _ = store.save();
+}
+
+/// Migrate the bot-native capability flags into global tool instances + bindings
+/// (ADR-0005). Runs once (guarded by `CAPS_MIGRATED_KEY`), reads the *raw* bot
+/// JSON before the fields are dropped from `BotConfig`, and is non-destructive:
+/// each enabled capability becomes an instance the bot binds via `enabledToolIds`.
+/// Memory keeps its data by keying the new instance's `store_id` on the bot id.
+fn migrate_capabilities<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(store) = app.store(STORE_FILE) else {
+        return;
+    };
+    if store.get(CAPS_MIGRATED_KEY).is_some() {
+        return;
+    }
+    let Some(mut bots_val) = store.get(BOTS_KEY) else {
+        store.set(CAPS_MIGRATED_KEY, serde_json::json!(true));
+        let _ = store.save();
+        return;
+    };
+    let mut global: GlobalConfig = store
+        .get(GLOBAL_KEY)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    if let Some(bots) = bots_val.as_array_mut() {
+        for bot in bots.iter_mut() {
+            let Some(obj) = bot.as_object_mut() else {
+                continue;
+            };
+            // Read the legacy flags up front (immutable) before mutating `obj`.
+            let bot_id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let flag = |k: &str| obj.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+            let (attach, transcribe, memory) = (
+                flag("attachmentsEnabled"),
+                flag("transcriptionEnabled"),
+                flag("memoryEnabled"),
+            );
+            let max = obj
+                .get("memoryMaxNotes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(40) as u32;
+            let budget = obj
+                .get("memoryCharBudget")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(2000) as u32;
+
+            let mut new_ids: Vec<String> = Vec::new();
+            let mut make = |name: &str, kind: &str| {
+                let inst = ToolInstance {
+                    id: new_id("tool"),
+                    name: name.to_string(),
+                    kind: kind.to_string(),
+                    ..ToolInstance::default()
+                };
+                new_ids.push(inst.id.clone());
+                inst
+            };
+            if attach {
+                let i = make("Attachments", KIND_ATTACHMENTS);
+                global.tools.push(i);
+            }
+            if transcribe {
+                let i = make("Transcription", KIND_TRANSCRIPTION);
+                global.tools.push(i);
+            }
+            if memory {
+                // Preserve existing memories: key the store on the bot id.
+                let mut i = make("Memory", KIND_MEMORY);
+                i.memory_max_notes = max;
+                i.memory_char_budget = budget;
+                i.store_id = bot_id.clone();
+                global.tools.push(i);
+            }
+
+            if !new_ids.is_empty() {
+                let arr = obj
+                    .entry("enabledToolIds")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(a) = arr.as_array_mut() {
+                    for id in new_ids {
+                        a.push(serde_json::json!(id));
+                    }
+                }
+            }
+            for k in [
+                "attachmentsEnabled",
+                "transcriptionEnabled",
+                "memoryEnabled",
+                "memoryMaxNotes",
+                "memoryCharBudget",
+            ] {
+                obj.remove(k);
+            }
+        }
+    }
+
+    if let Ok(v) = serde_json::to_value(&global) {
+        store.set(GLOBAL_KEY, v);
+    }
+    store.set(BOTS_KEY, bots_val);
+    store.set(CAPS_MIGRATED_KEY, serde_json::json!(true));
     let _ = store.save();
 }
 
@@ -342,10 +458,26 @@ mod tests {
     #[test]
     fn bot_defaults() {
         let b = BotConfig::default();
-        assert!(b.attachments_enabled);
-        assert!(b.transcription_enabled);
-        assert!(!b.memory_enabled);
+        assert!(b.enabled_tool_ids.is_empty());
         assert_eq!(b.followup_window_messages, 5);
+    }
+
+    #[test]
+    fn bound_finds_first_instance_of_kind() {
+        let mem = ToolInstance {
+            id: "m1".into(),
+            kind: KIND_MEMORY.into(),
+            ..ToolInstance::default()
+        };
+        let global = GlobalConfig {
+            tools: vec![mem],
+            ..GlobalConfig::default()
+        };
+        let mut bot = BotConfig::default();
+        assert!(global.bound(&bot, KIND_MEMORY).is_none());
+        bot.enabled_tool_ids.push("m1".into());
+        assert_eq!(global.bound(&bot, KIND_MEMORY).unwrap().id, "m1");
+        assert!(global.bound(&bot, KIND_ATTACHMENTS).is_none());
     }
 
     #[test]

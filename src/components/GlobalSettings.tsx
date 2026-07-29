@@ -139,21 +139,40 @@ export function GlobalSettings({
                         if (!m || (m.configFields.length === 0 && !m.oauth)) return null
                         return (
                           <Section title={m.label} caption={m.configCaption ?? undefined}>
-                            {m.configFields.map((field) => (
-                              <FloatingField
-                                key={field.key}
-                                label={field.label}
-                                type={field.secret ? "password" : undefined}
-                                value={
-                                  (tool[field.key as keyof ToolInstance] as string) ?? ""
-                                }
-                                onChange={(e) =>
-                                  updateTool(tool.id, {
-                                    [field.key]: e.target.value,
-                                  } as Partial<ToolInstance>)
-                                }
-                              />
-                            ))}
+                            {m.configFields.map((field) =>
+                              field.number ? (
+                                <FloatingField
+                                  key={field.key}
+                                  label={field.label}
+                                  type="number"
+                                  min={1}
+                                  value={String(
+                                    (tool[field.key as keyof ToolInstance] as number) ??
+                                      0,
+                                  )}
+                                  onChange={(e) =>
+                                    updateTool(tool.id, {
+                                      [field.key]: Number(e.target.value) || 0,
+                                    } as Partial<ToolInstance>)
+                                  }
+                                />
+                              ) : (
+                                <FloatingField
+                                  key={field.key}
+                                  label={field.label}
+                                  type={field.secret ? "password" : undefined}
+                                  value={
+                                    (tool[field.key as keyof ToolInstance] as string) ??
+                                    ""
+                                  }
+                                  onChange={(e) =>
+                                    updateTool(tool.id, {
+                                      [field.key]: e.target.value,
+                                    } as Partial<ToolInstance>)
+                                  }
+                                />
+                              ),
+                            )}
                             {m.oauth ? (
                               <Flex align="center" gap="3">
                                 <Button

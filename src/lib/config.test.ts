@@ -51,19 +51,19 @@ describe("config helpers", () => {
     expect(toolIcon("unknown")).toBe("🔧")
   })
 
-  it("newBot carries audio + attachment defaults", () => {
+  it("newBot carries model defaults", () => {
     const b = newBot(0)
-    expect(b.transcriptionEnabled).toBe(true)
-    expect(b.attachmentsEnabled).toBe(true)
     expect(b.model.transcriptionModel).toBe("whisper-1")
     expect(b.model.embeddingModel).toBe("nomic-embed-text")
+    expect(b.enabledToolIds).toEqual([])
     expect(b.id).toBeTruthy()
   })
 
-  it("newToolInstance sets type + label and a fresh id", () => {
+  it("newToolInstance sets type + label, defaults + a fresh id", () => {
     const t = newToolInstance("web_search")
     expect(t.type).toBe("web_search")
     expect(t.name).toBe("Web Search")
+    expect(t.memoryMaxNotes).toBe(40)
     expect(t.id).toBeTruthy()
   })
 })

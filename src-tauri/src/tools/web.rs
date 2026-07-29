@@ -30,6 +30,7 @@ pub fn manifest() -> ToolManifest {
             key: "apiKey",
             label: "API key",
             secret: true,
+            number: false,
         }],
         ops: WebOp::ALL
             .iter()

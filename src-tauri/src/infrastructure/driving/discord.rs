@@ -73,6 +73,11 @@ struct Handler {
     catalog: Vec<ResolvedTool>,
     /// Tools subscribed to the attachment gate (resolved once at start).
     sinks: Vec<AttachmentSink>,
+    /// Capability bindings resolved once at start (a bot restarts on config
+    /// change, so these stay current).
+    attachments_on: bool,
+    transcription_on: bool,
+    memory_on: bool,
     windows: Mutex<HashMap<ChannelId, ActiveConvo>>,
     convos: Mutex<HashMap<ChannelId, ChannelMemory>>,
     /// Active voice-channel transcriptions, keyed by guild.
@@ -89,6 +94,9 @@ impl Handler {
     ) -> Self {
         let catalog = tools::catalog(&global, &bot);
         let sinks = tools::attachment_sinks(&global, &bot);
+        let attachments_on = global.bound(&bot, config::KIND_ATTACHMENTS).is_some();
+        let transcription_on = global.bound(&bot, config::KIND_TRANSCRIPTION).is_some();
+        let memory_on = global.bound(&bot, config::KIND_MEMORY).is_some();
         Self {
             app,
             bot_id,
@@ -96,6 +104,9 @@ impl Handler {
             bot,
             catalog,
             sinks,
+            attachments_on,
+            transcription_on,
+            memory_on,
             windows: Mutex::new(HashMap::new()),
             convos: Mutex::new(HashMap::new()),
             meetings: AsyncMutex::new(HashMap::new()),
@@ -570,7 +581,7 @@ impl Handler {
     /// be read inline this turn (the user attaches a file and asks the bot to act
     /// on it). Handles text-ish files and PDFs; bounded by size + char cap.
     async fn attachment_texts(&self, msg: &Message) -> Vec<(String, String)> {
-        if !self.bot.attachments_enabled {
+        if !self.attachments_on {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -614,7 +625,7 @@ impl Handler {
         let context = format!("{}: {}", msg.author.name, msg.content);
         for attachment in msg.attachments.iter().take(MAX_ATTACHMENTS) {
             let mime = attachment.content_type.clone().unwrap_or_default();
-            if self.bot.transcription_enabled
+            if self.transcription_on
                 && crate::infrastructure::driven::ingest::is_audio(&attachment.filename, &mime)
             {
                 continue;
@@ -1097,7 +1108,7 @@ impl Handler {
             );
         }
         // Load memories fresh so ones saved this session apply next turn.
-        if self.bot.memory_enabled {
+        if self.memory_on {
             let memories = crate::infrastructure::driving::memory::load(&self.app, &self.bot_id);
             system.push_str(&crate::infrastructure::driving::memory::system_section(
                 &memories,
@@ -1178,13 +1189,13 @@ impl EventHandler for Handler {
 
         // Transcribe audio attachments (post transcript + summary, index them);
         // returns transcripts so the reply can use them inline this turn.
-        let audio_texts = if self.bot.transcription_enabled && !msg.attachments.is_empty() {
+        let audio_texts = if self.transcription_on && !msg.attachments.is_empty() {
             self.handle_audio(&ctx, &msg).await
         } else {
             Vec::new()
         };
         // Forward remaining (non-audio) attachments to subscribed tools.
-        if self.bot.attachments_enabled && !self.sinks.is_empty() && !msg.attachments.is_empty() {
+        if self.attachments_on && !self.sinks.is_empty() && !msg.attachments.is_empty() {
             self.dispatch_attachments(&msg).await;
         }
 
@@ -1236,7 +1247,7 @@ impl EventHandler for Handler {
     /// A scheduled event went live — if it's tied to a voice channel, offer to
     /// join and transcribe it (Phase 3). The user confirms with a "join" command.
     async fn guild_scheduled_event_update(&self, ctx: Context, event: ScheduledEvent) {
-        if !self.bot.transcription_enabled {
+        if !self.transcription_on {
             return;
         }
         if !matches!(event.status, ScheduledEventStatus::Active) {

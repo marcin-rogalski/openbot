@@ -228,51 +228,6 @@ export function BotView({
                       />
                     </Flex>
                   </Section>
-                  <Section
-                    title="Attachments"
-                    action={
-                      <Switch.Root
-                        size="sm"
-                        checked={cfg.attachmentsEnabled}
-                        colorPalette="brand"
-                        onCheckedChange={(e) => update("attachmentsEnabled", e.checked)}
-                      >
-                        <Switch.HiddenInput />
-                        <Switch.Control>
-                          <Switch.Thumb />
-                        </Switch.Control>
-                      </Switch.Root>
-                    }
-                  >
-                    <Text fontSize="sm" color="fg.muted">
-                      Text files you attach are read inline so the bot can act on them
-                      this turn; files are also offered to enabled tools (e.g. Google
-                      Drive archives relevant ones, guided by memory rules).
-                    </Text>
-                  </Section>
-                  <Section
-                    title="Audio transcription"
-                    action={
-                      <Switch.Root
-                        size="sm"
-                        checked={cfg.transcriptionEnabled}
-                        colorPalette="brand"
-                        onCheckedChange={(e) => update("transcriptionEnabled", e.checked)}
-                      >
-                        <Switch.HiddenInput />
-                        <Switch.Control>
-                          <Switch.Thumb />
-                        </Switch.Control>
-                      </Switch.Root>
-                    }
-                  >
-                    <Text fontSize="sm" color="fg.muted">
-                      Audio you post is transcribed (via the transcription model); the bot
-                      replies with a transcript and a summary <code>.md</code>, and — when
-                      a Google Drive tool is enabled — saves and indexes them into the
-                      knowledge base.
-                    </Text>
-                  </Section>
                 </>
               ) : null}
 
@@ -320,7 +275,15 @@ export function BotView({
                               </Flex>
                             }
                           >
-                            {enabled ? (
+                            {!enabled ? (
+                              <Text fontSize="sm" color="fg.muted">
+                                Enable this tool (toggle on the left) to configure it.
+                              </Text>
+                            ) : ops.length === 0 ? (
+                              <Text fontSize="sm" color="fg.muted">
+                                Active for this bot — no per-action approvals.
+                              </Text>
+                            ) : (
                               <Section title="Approvals">
                                 <Stack gap="1.5">
                                   {ops.map((o) => {
@@ -344,10 +307,6 @@ export function BotView({
                                   })}
                                 </Stack>
                               </Section>
-                            ) : (
-                              <Text fontSize="sm" color="fg.muted">
-                                Enable this tool (toggle on the left) to configure it.
-                              </Text>
                             )}
                           </CollapsibleRow>
                         </Box>
@@ -359,44 +318,11 @@ export function BotView({
 
               {tab === "memory" ? (
                 <>
-                  <Section
-                    title="Memory"
-                    caption="The bot saves memories/rules via a tool; they're injected into its prompt and consolidated when over budget."
-                    action={
-                      <Switch.Root
-                        size="sm"
-                        checked={cfg.memoryEnabled}
-                        colorPalette="brand"
-                        onCheckedChange={(e) => update("memoryEnabled", e.checked)}
-                      >
-                        <Switch.HiddenInput />
-                        <Switch.Control>
-                          <Switch.Thumb />
-                        </Switch.Control>
-                      </Switch.Root>
-                    }
-                  >
-                    <Flex gap="3">
-                      <FloatingField
-                        label="Max notes"
-                        type="number"
-                        min={1}
-                        value={String(cfg.memoryMaxNotes)}
-                        onChange={(e) =>
-                          update("memoryMaxNotes", Number(e.target.value) || 1)
-                        }
-                      />
-                      <FloatingField
-                        label="Char budget"
-                        type="number"
-                        min={100}
-                        value={String(cfg.memoryCharBudget)}
-                        onChange={(e) =>
-                          update("memoryCharBudget", Number(e.target.value) || 100)
-                        }
-                      />
-                    </Flex>
-                  </Section>
+                  <Text fontSize="sm" color="fg.muted">
+                    Enable memory by adding a Memory tool in General settings → Tools and
+                    binding it in this bot's Tools tab (its budget lives there). Bind the
+                    same instance to several bots to share one memory store.
+                  </Text>
                   <Section
                     title={`Saved memories (${memories.length})`}
                     action={

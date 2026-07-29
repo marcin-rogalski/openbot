@@ -18,6 +18,10 @@ export type ToolInstance = {
   folderId: string
   // Web Search (Keenable): a single API key.
   apiKey: string
+  // Memory: consolidation budget + the (sharable) store key.
+  memoryMaxNotes: number
+  memoryCharBudget: number
+  storeId: string
 }
 
 // --- Tool manifest (single source of truth, from the Rust backend) ----------
@@ -25,7 +29,12 @@ export type ToolInstance = {
 // modules and fetched via `tool_manifests`. The frontend renders every tool
 // editor and approval list from these — no hardcoded tables here.
 
-export type ManifestField = { key: string; label: string; secret: boolean }
+export type ManifestField = {
+  key: string
+  label: string
+  secret: boolean
+  number: boolean
+}
 export type ManifestOp = { op: string; label: string; write: boolean }
 export type ToolManifest = {
   kind: string
@@ -87,11 +96,6 @@ export type BotConfig = {
   followupWindowSecs: number
   enabledToolIds: string[]
   toolPolicies: Record<string, ToolPolicy>
-  memoryEnabled: boolean
-  memoryMaxNotes: number
-  memoryCharBudget: number
-  attachmentsEnabled: boolean
-  transcriptionEnabled: boolean
 }
 
 export const BOT_COLORS = [
@@ -128,11 +132,6 @@ export function newBot(index: number): BotConfig {
     followupWindowSecs: 180,
     enabledToolIds: [],
     toolPolicies: {},
-    memoryEnabled: false,
-    memoryMaxNotes: 40,
-    memoryCharBudget: 2000,
-    attachmentsEnabled: true,
-    transcriptionEnabled: true,
   }
 }
 
@@ -145,6 +144,9 @@ export function newToolInstance(type: string): ToolInstance {
     clientSecret: "",
     folderId: "",
     apiKey: "",
+    memoryMaxNotes: 40,
+    memoryCharBudget: 2000,
+    storeId: "",
   }
 }
 

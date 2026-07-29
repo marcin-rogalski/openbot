@@ -10,28 +10,33 @@ use tauri::AppHandle;
 use crate::compose::{driven, driving};
 use crate::domain::memory::{Memory, MemoryKind};
 use crate::infrastructure::bot;
-use crate::infrastructure::config;
+use crate::infrastructure::config::{self, ToolInstance};
 use crate::infrastructure::dto::memory::MemoryDto;
+
+/// The memory tool instance bound to this bot (its store + budgets), or `None`
+/// when the bot has no memory tool enabled. All memory surfaces resolve through
+/// here, so two bots binding the same instance share one store.
+fn bound_memory(app: &AppHandle, bot_id: &str) -> Option<ToolInstance> {
+    let bot = config::load_bot(app, bot_id)?;
+    config::load_global(app)
+        .bound(&bot, config::KIND_MEMORY)
+        .cloned()
+}
 
 // --- Tool ops (Discord tool loop) -------------------------------------------
 
-/// Append a memory and enforce the bot's budget. Returns a short tool-result
+/// Append a memory and enforce the instance's budget. Returns a short tool-result
 /// string.
 pub async fn save(app: &AppHandle, bot_id: &str, kind: &str, text: &str) -> String {
     let kind = MemoryKind::parse(kind);
     let Some(bot) = config::load_bot(app, bot_id) else {
-        // No bot config: best-effort append without budget enforcement.
-        let store = driven::memory_store(app, bot_id);
-        let Some(text) = crate::domain::memory::sanitize_text(text) else {
-            return "error: empty memory".to_string();
-        };
-        let mut memories = store.load();
-        memories.push(store.mint(kind, text));
-        store.store_all(&memories);
-        return format!("saved {}", kind.as_str());
+        return "error: bot config not found".to_string();
+    };
+    let Some(mem) = bound_memory(app, bot_id) else {
+        return "error: no memory tool enabled".to_string();
     };
 
-    match driving::save_memory(app, &bot).run(kind, text).await {
+    match driving::save_memory(app, &bot, &mem).run(kind, text).await {
         Ok(outcome) => {
             if let Some((before, after)) = outcome.consolidated {
                 bot::emit_log(
@@ -48,7 +53,10 @@ pub async fn save(app: &AppHandle, bot_id: &str, kind: &str, text: &str) -> Stri
 
 /// Delete a memory by id (tool loop).
 pub fn delete(app: &AppHandle, bot_id: &str, id: &str) {
-    let store = driven::memory_store(app, bot_id);
+    let Some(mem) = bound_memory(app, bot_id) else {
+        return;
+    };
+    let store = driven::memory_store(app, &mem.store_id);
     let mut memories = store.load();
     memories.retain(|m| m.id != id);
     store.store_all(&memories);
@@ -57,7 +65,10 @@ pub fn delete(app: &AppHandle, bot_id: &str, id: &str) {
 // --- Read helper (prompt building, attachment gate) -------------------------
 
 pub fn load(app: &AppHandle, bot_id: &str) -> Vec<Memory> {
-    driven::memory_store(app, bot_id).load()
+    match bound_memory(app, bot_id) {
+        Some(mem) => driven::memory_store(app, &mem.store_id).load(),
+        None => Vec::new(),
+    }
 }
 
 // --- Prompt / gate presentation ---------------------------------------------
@@ -114,7 +125,9 @@ pub fn delete_memory(app: AppHandle, bot_id: String, id: String) {
 
 #[tauri::command]
 pub fn clear_memories(app: AppHandle, bot_id: String) {
-    driven::memory_store(&app, &bot_id).store_all(&[]);
+    if let Some(mem) = bound_memory(&app, &bot_id) {
+        driven::memory_store(&app, &mem.store_id).store_all(&[]);
+    }
 }
 
 #[cfg(test)]

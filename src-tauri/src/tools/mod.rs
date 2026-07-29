@@ -17,8 +17,12 @@ use tauri::AppHandle;
 use crate::infrastructure::config::{BotConfig, GlobalConfig};
 
 // One module per tool — each owns its `Op` enum, metadata, and execution.
+// Attachments + transcription are event-driven capabilities (no model ops): they
+// contribute a manifest + binding but no `ResolvedTool`.
+mod attachments;
 mod drive;
 mod memory;
+mod transcription;
 mod web;
 
 // Shared tool boundary: the manifest (schema for the UI) + its Tauri command.
@@ -34,15 +38,18 @@ use web::WebOp;
 /// editors + approvals from. The single source of truth — `config.ts` fetches
 /// this instead of hardcoding tool classes/ops/fields.
 pub fn manifests() -> Vec<ToolManifest> {
-    vec![drive::manifest(), web::manifest()]
+    vec![
+        drive::manifest(),
+        web::manifest(),
+        attachments::manifest(),
+        transcription::manifest(),
+        memory::manifest(),
+    ]
 }
 
 /// A Drive-link transcription background job. Re-exported for `discord.rs`,
 /// which runs it with channel context.
 pub use drive::run_transcription;
-
-/// Fixed instance id for the per-bot memory tools.
-const MEMORY_INSTANCE: &str = "memory";
 
 // --- Resolved tools ---------------------------------------------------------
 
@@ -242,18 +249,21 @@ pub fn catalog(global: &GlobalConfig, bot: &BotConfig) -> Vec<ResolvedTool> {
                     });
                 }
             }
+            memory::KIND => {
+                // Memory ops keep fixed call names (`memory_save`/`memory_delete`);
+                // policies + the store key on the bound instance.
+                for op in MemoryOp::ALL {
+                    tools.push(ResolvedTool {
+                        call_name: op.call_name().to_string(),
+                        instance_id: instance.id.clone(),
+                        description: op.description().to_string(),
+                        kind: ToolKind::Memory { op },
+                    });
+                }
+            }
+            // Attachments + transcription are event-driven; resolved via
+            // `GlobalConfig::bound`, not the model-callable catalog.
             _ => {}
-        }
-    }
-
-    if bot.memory_enabled {
-        for op in MemoryOp::ALL {
-            tools.push(ResolvedTool {
-                call_name: op.call_name().to_string(),
-                instance_id: MEMORY_INSTANCE.to_string(),
-                description: op.description().to_string(),
-                kind: ToolKind::Memory { op },
-            });
         }
     }
 

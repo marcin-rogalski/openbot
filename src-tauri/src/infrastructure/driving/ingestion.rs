@@ -13,14 +13,11 @@ use crate::infrastructure::config::BotConfig;
 use crate::tools::{AttachmentRef, AttachmentSink};
 
 /// The bot's standing rules, used to steer archival/foldering decisions.
+/// `memory::load` resolves the bound memory instance (empty when none bound).
 fn guidance(app: &AppHandle, bot: &BotConfig) -> String {
-    if bot.memory_enabled {
-        crate::infrastructure::driving::memory::guidance(
-            &crate::infrastructure::driving::memory::load(app, &bot.id),
-        )
-    } else {
-        String::new()
-    }
+    crate::infrastructure::driving::memory::guidance(&crate::infrastructure::driving::memory::load(
+        app, &bot.id,
+    ))
 }
 
 /// Relevance-gate an attachment, then archive + index it. Returns whether it was
