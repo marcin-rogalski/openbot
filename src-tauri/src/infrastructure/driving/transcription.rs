@@ -72,6 +72,23 @@ pub async fn transcribe_recording(
     Ok((transcript, truncated))
 }
 
+/// Transcribe an already-WAV clip to plain text; `None` on failure or silence.
+/// Used by the voice path, which produces WAV directly (no decode needed).
+pub async fn transcribe_wav_text(bot: &BotConfig, wav: Vec<u8>) -> Option<String> {
+    let segments = compose_transcriber(bot)
+        .transcribe(wav, "utterance.wav", "audio/wav")
+        .await
+        .ok()?;
+    let mut transcript = Transcript::default();
+    transcript.append(segments, 0.0);
+    let text = transcript.plain();
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 /// Summarise a transcript; on failure returns a placeholder note (never errors,
 /// so a failed summary doesn't sink the whole transcription).
 pub async fn summarize(bot: &BotConfig, plain: &str) -> String {

@@ -576,6 +576,33 @@ impl Progress {
     }
 }
 
+/// A tool call parsed out of the model's ReAct output. (Tools are the boundary
+/// between the model and the app, so their call format lives here, not in the
+/// hexagon.)
+pub struct ToolCall {
+    pub tool: String,
+    pub args: Value,
+}
+
+/// Find a `TOOL_CALL { … }` directive in the model's text and extract the tool
+/// name + args. Tolerates surrounding text and trailing content after the JSON.
+pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
+    let idx = text.find("TOOL_CALL")?;
+    let after = &text[idx + "TOOL_CALL".len()..];
+    let brace = after.find('{')?;
+    // Read exactly one JSON value starting at the first brace, ignoring the rest.
+    let value = serde_json::Deserializer::from_str(&after[brace..])
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
+    let tool = value.get("tool")?.as_str()?.to_string();
+    let args = value
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Some(ToolCall { tool, args })
+}
+
 pub async fn execute(
     app: &AppHandle,
     bot_id: &str,
@@ -957,6 +984,27 @@ fn slugify(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_tool_call_extracts_name_and_args() {
+        let t =
+            "sure\nTOOL_CALL {\"tool\": \"drive_search\", \"args\": {\"query\": \"x\"}} trailing";
+        let c = parse_tool_call(t).unwrap();
+        assert_eq!(c.tool, "drive_search");
+        assert_eq!(c.args["query"], "x");
+    }
+
+    #[test]
+    fn parse_tool_call_none_when_absent() {
+        assert!(parse_tool_call("just a normal reply").is_none());
+    }
+
+    #[test]
+    fn parse_tool_call_defaults_missing_args() {
+        let c = parse_tool_call("TOOL_CALL {\"tool\": \"x\"}").unwrap();
+        assert_eq!(c.tool, "x");
+        assert!(c.args.is_object());
+    }
 
     #[test]
     fn slugify_normalizes() {

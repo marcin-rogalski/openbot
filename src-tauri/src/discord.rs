@@ -19,7 +19,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::bot::{self, ActivityKind, BotManager, Decision, Policy};
 use crate::config::{self, BotConfig, GlobalConfig};
-use crate::model::{self, ChatMessage};
+use crate::domain::conversation::ChatMessage;
 use crate::tools::{self, AttachmentRef, AttachmentSink, ResolvedTool};
 use crate::voice::{Meeting, Receiver};
 
@@ -132,7 +132,10 @@ impl Handler {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let summary = match model::summarize_conversation(&self.bot, &previous, &text).await {
+        let summary = match crate::compose::chat::compose_chat_model(&self.bot)
+            .summarize_conversation(&previous, &text)
+            .await
+        {
             Ok(summary) => summary,
             Err(_) => return previous,
         };
@@ -214,6 +217,7 @@ impl Handler {
         let mut final_text: Option<String> = None;
         let mut error: Option<String> = None;
         let mut sources: Vec<String> = Vec::new();
+        let chat_model = crate::compose::chat::compose_chat_model(&self.bot);
 
         for iter in 0..MAX_TOOL_ITERS {
             if iter > 0 {
@@ -225,27 +229,37 @@ impl Handler {
             let app = self.app.clone();
             let bot_id = self.bot_id.clone();
             let sid = stream_id.clone();
-            let mut emitted = 0usize;
-            let result = model::chat(&self.bot, messages.clone(), |accumulated: &str| {
-                if accumulated.len() >= emitted + STREAM_EMIT_CHARS {
-                    emitted = accumulated.len();
+            // Throttle stream updates by emitted length; `Fn + Sync` for the port,
+            // so the counter is an atomic (the stream is sequential anyway).
+            let emitted = std::sync::atomic::AtomicUsize::new(0);
+            let on_delta = |accumulated: &str| {
+                use std::sync::atomic::Ordering::Relaxed;
+                if accumulated.len() >= emitted.load(Relaxed) + STREAM_EMIT_CHARS {
+                    emitted.store(accumulated.len(), Relaxed);
                     bot::stream_update(&app, &bot_id, &sid, accumulated);
                 }
-            })
-            .await;
-            let (text, metrics) = match result {
-                Ok(result) => result,
+            };
+            let reply = match chat_model.chat(messages.clone(), &on_delta).await {
+                Ok(reply) => reply,
                 Err(e) => {
                     bot::emit_log(&self.app, &self.bot_id, format!("Model error: {e}"));
                     error = Some(e);
                     break;
                 }
             };
+            let text = reply.text;
             // Final content (flush any un-emitted tail).
             bot::stream_update(&self.app, &self.bot_id, &stream_id, &text);
-            bot::emit_metrics(&self.app, &self.bot_id, metrics);
+            bot::emit_metrics(
+                &self.app,
+                &self.bot_id,
+                bot::Metrics {
+                    prefill_tps: reply.prefill_tps,
+                    inference_tps: reply.inference_tps,
+                },
+            );
 
-            match model::parse_tool_call(&text) {
+            match tools::parse_tool_call(&text) {
                 None => {
                     final_text = Some(text);
                     break;
@@ -315,7 +329,7 @@ impl Handler {
         &self,
         ctx: &Context,
         channel_id: ChannelId,
-        call: &model::ToolCall,
+        call: &tools::ToolCall,
         sources: &mut Vec<String>,
         status: &mut Option<Message>,
     ) -> String {
@@ -902,7 +916,7 @@ impl Handler {
         }
         match manager.join(guild_id, voice_channel).await {
             Ok(call) => {
-                let meeting = Meeting::new(self.app.clone(), self.bot_id.clone(), self.bot.clone());
+                let meeting = Meeting::new(self.bot.clone());
                 {
                     let mut handler = call.lock().await;
                     handler.add_global_event(
@@ -997,9 +1011,8 @@ impl Handler {
              ---\n\n{body}\n",
             rendered.minutes,
         );
-        let summary = model::summarize_transcript(&self.bot, &body)
-            .await
-            .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
+        let summary =
+            crate::infrastructure::driving::transcription::summarize(&self.bot, &body).await;
         let summary_md = format!("# Meeting summary\n\n{summary}\n");
 
         let stamp = std::time::SystemTime::now()
@@ -1186,7 +1199,9 @@ impl EventHandler for Handler {
             let recent = &history[..history.len().min(RAW_WINDOW)];
             let context = render_context(recent, bot_user_id);
             bot::emit_log(&self.app, &self.bot_id, "follow-up: checking relevance…");
-            let engage = model::should_engage(&self.bot, &context, &msg.content).await;
+            let engage = crate::compose::chat::compose_chat_model(&self.bot)
+                .should_engage(&context, &msg.content)
+                .await;
             bot::emit_log(
                 &self.app,
                 &self.bot_id,

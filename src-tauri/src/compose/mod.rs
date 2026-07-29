@@ -4,6 +4,7 @@
 //! Credentialed per-instance adapters (e.g. web search) are composed on demand —
 //! see `compose_search_web`.
 
+pub mod chat;
 pub mod drive;
 pub mod fetch_page;
 pub mod ingestion;

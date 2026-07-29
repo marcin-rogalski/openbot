@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bot::Metrics;
 use crate::config::BotConfig;
+use crate::domain::conversation::ChatMessage;
 
 /// Cap reply generation so a runaway/looping model can't generate forever.
 const MAX_REPLY_TOKENS: u32 = 5000;
@@ -16,35 +17,6 @@ const REQUEST_TIMEOUT_SECS: u64 = 300;
 /// `REPEAT_CHECK_EVERY` new chars, and abort if they're a short cycle repeated.
 const REPEAT_WINDOW: usize = 160;
 const REPEAT_CHECK_EVERY: usize = 40;
-
-/// A chat message in the OpenAI schema. Reused by `discord.rs` to build the
-/// conversation sent to the model.
-#[derive(Clone, Serialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-}
-
-impl ChatMessage {
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".into(),
-            content: content.into(),
-        }
-    }
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".into(),
-            content: content.into(),
-        }
-    }
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: "assistant".into(),
-            content: content.into(),
-        }
-    }
-}
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
@@ -126,7 +98,7 @@ struct Usage {
 pub async fn chat(
     cfg: &BotConfig,
     messages: Vec<ChatMessage>,
-    mut on_progress: impl FnMut(&str),
+    on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<(String, Metrics), String> {
     use futures_util::StreamExt;
 
@@ -390,21 +362,6 @@ async fn transcribe_raw(
     resp.json().await.map_err(|e| format!("bad response: {e}"))
 }
 
-/// Transcribe an audio clip; returns the plain transcript text.
-pub async fn transcribe(
-    cfg: &BotConfig,
-    bytes: Vec<u8>,
-    filename: &str,
-    mime: &str,
-) -> Result<String, String> {
-    let text = transcribe_raw(cfg, bytes, filename, mime).await?.text;
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return Err("empty transcription".to_string());
-    }
-    Ok(text)
-}
-
 /// Transcribe an audio clip; returns timestamped segments (falls back to a single
 /// segment at 0 s if the server didn't return any).
 pub async fn transcribe_segments(
@@ -562,31 +519,6 @@ pub async fn pick_folder(
     }
 }
 
-/// A tool call parsed out of the model's ReAct output.
-pub struct ToolCall {
-    pub tool: String,
-    pub args: serde_json::Value,
-}
-
-/// Find a `TOOL_CALL { … }` directive in the model's text and extract the tool
-/// name + args. Tolerates surrounding text and trailing content after the JSON.
-pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
-    let idx = text.find("TOOL_CALL")?;
-    let after = &text[idx + "TOOL_CALL".len()..];
-    let brace = after.find('{')?;
-    // Read exactly one JSON value starting at the first brace, ignoring the rest.
-    let value = serde_json::Deserializer::from_str(&after[brace..])
-        .into_iter::<serde_json::Value>()
-        .next()?
-        .ok()?;
-    let tool = value.get("tool")?.as_str()?.to_string();
-    let args = value
-        .get("args")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    Some(ToolCall { tool, args })
-}
-
 async fn request(
     cfg: &BotConfig,
     messages: Vec<ChatMessage>,
@@ -683,27 +615,6 @@ fn derive_metrics(usage: Option<&Usage>, elapsed_secs: f64) -> Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_tool_call_extracts_name_and_args() {
-        let t =
-            "sure\nTOOL_CALL {\"tool\": \"drive_search\", \"args\": {\"query\": \"x\"}} trailing";
-        let c = parse_tool_call(t).unwrap();
-        assert_eq!(c.tool, "drive_search");
-        assert_eq!(c.args["query"], "x");
-    }
-
-    #[test]
-    fn parse_tool_call_none_when_absent() {
-        assert!(parse_tool_call("just a normal reply").is_none());
-    }
-
-    #[test]
-    fn parse_tool_call_defaults_missing_args() {
-        let c = parse_tool_call("TOOL_CALL {\"tool\": \"x\"}").unwrap();
-        assert_eq!(c.tool, "x");
-        assert!(c.args.is_object());
-    }
 
     #[test]
     fn looks_repetitive_flags_cycles() {

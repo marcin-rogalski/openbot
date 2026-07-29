@@ -6,10 +6,11 @@ use async_trait::async_trait;
 
 use crate::application::ports::memory::MemoryConsolidator;
 use crate::config::{self, BotConfig};
+use crate::domain::conversation::ChatMessage;
 use crate::domain::memory::Memory;
 use crate::infrastructure::dto::memory::{parse_lines, render_lines};
 use crate::infrastructure::shared::time::now_ms;
-use crate::model::{self, ChatMessage};
+use crate::model;
 
 pub struct ModelConsolidator {
     bot: BotConfig,
@@ -42,7 +43,7 @@ impl MemoryConsolidator for ModelConsolidator {
         ];
 
         // Consolidation is a background pass — no live streaming needed.
-        let (text, _) = model::chat(&self.bot, messages, |_| {}).await.ok()?;
+        let (text, _) = model::chat(&self.bot, messages, &|_: &str| {}).await.ok()?;
         let parsed = parse_lines(&text);
         if parsed.is_empty() {
             return None;

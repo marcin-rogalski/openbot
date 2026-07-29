@@ -10,6 +10,7 @@ pub mod knowledge_index;
 pub mod memory_consolidator;
 pub mod memory_store;
 pub mod model_archive_policy;
+pub mod model_chat;
 pub mod model_summarizer;
 pub mod model_transcriber;
 pub mod symphonia_codec;

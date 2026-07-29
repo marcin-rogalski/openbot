@@ -16,12 +16,9 @@ use serenity::async_trait;
 use songbird::events::context_data::VoiceTick;
 use songbird::model::payload::Speaking;
 use songbird::{Event, EventContext, EventHandler as VoiceEventHandler};
-use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-use crate::bot;
 use crate::config::BotConfig;
-use crate::model;
 
 /// Consecutive silent 20 ms ticks that close an utterance (~0.8 s).
 const SILENCE_TICKS: u32 = 40;
@@ -52,8 +49,6 @@ struct Buf {
 
 /// Live state for one active meeting (one guild's voice connection).
 pub struct Meeting {
-    app: AppHandle,
-    bot_id: String,
     bot: BotConfig,
     started: Instant,
     seq: AtomicU64,
@@ -64,10 +59,8 @@ pub struct Meeting {
 }
 
 impl Meeting {
-    pub fn new(app: AppHandle, bot_id: String, bot: BotConfig) -> Arc<Self> {
+    pub fn new(bot: BotConfig) -> Arc<Self> {
         Arc::new(Self {
-            app,
-            bot_id,
             bot,
             started: Instant::now(),
             seq: AtomicU64::new(0),
@@ -127,21 +120,16 @@ impl Meeting {
         tokio::spawn(async move {
             let user_id = self.ssrc_user.lock().await.get(&ssrc).copied();
             let wav = crate::audio::pcm_to_wav(&mono, SAMPLE_RATE);
-            match model::transcribe(&self.bot, wav, "utterance.wav", "audio/wav").await {
-                Ok(text) if !text.trim().is_empty() => {
-                    self.transcript.lock().await.push(Line {
-                        seq,
-                        at_secs,
-                        user_id,
-                        text: text.trim().to_string(),
-                    });
-                }
-                Ok(_) => {}
-                Err(e) => bot::emit_log(
-                    &self.app,
-                    &self.bot_id,
-                    format!("voice: transcribe failed: {e}"),
-                ),
+            if let Some(text) =
+                crate::infrastructure::driving::transcription::transcribe_wav_text(&self.bot, wav)
+                    .await
+            {
+                self.transcript.lock().await.push(Line {
+                    seq,
+                    at_secs,
+                    user_id,
+                    text: text.trim().to_string(),
+                });
             }
         });
     }
@@ -165,16 +153,16 @@ impl Meeting {
             let at_secs = self.started.elapsed().as_secs();
             let user_id = self.ssrc_user.lock().await.get(&ssrc).copied();
             let wav = crate::audio::pcm_to_wav(&mono, SAMPLE_RATE);
-            if let Ok(text) = model::transcribe(&self.bot, wav, "utterance.wav", "audio/wav").await
+            if let Some(text) =
+                crate::infrastructure::driving::transcription::transcribe_wav_text(&self.bot, wav)
+                    .await
             {
-                if !text.trim().is_empty() {
-                    self.transcript.lock().await.push(Line {
-                        seq,
-                        at_secs,
-                        user_id,
-                        text: text.trim().to_string(),
-                    });
-                }
+                self.transcript.lock().await.push(Line {
+                    seq,
+                    at_secs,
+                    user_id,
+                    text: text.trim().to_string(),
+                });
             }
         }
     }
