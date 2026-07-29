@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "fix": "bash scripts/fix.sh",
     "verify": "bash scripts/verify.sh",
     "typecheck": "tsc --noEmit",
     "check": "biome check --write .",
