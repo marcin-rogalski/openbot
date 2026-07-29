@@ -20,9 +20,11 @@ import {
   type GlobalConfig,
   loadBots,
   loadGlobal,
+  loadManifests,
   newBot,
   saveBots,
   saveGlobal,
+  type ToolManifest,
 } from "./lib/config"
 
 type View = "bot" | "global"
@@ -33,6 +35,7 @@ function App() {
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null)
   const [view, setView] = useState<View>("bot")
   const [verbose, setVerbose] = useState(false)
+  const [manifests, setManifests] = useState<ToolManifest[] | null>(null)
 
   const runningIds = useRunningBots()
   const busyState = useBusyState()
@@ -41,6 +44,7 @@ function App() {
   const [approvals, resolveApproval] = useToolApprovals()
 
   useEffect(() => {
+    loadManifests().then(setManifests)
     loadGlobal().then(setGlobalCfg)
     loadBots().then((b) => {
       setBots(b)
@@ -105,13 +109,18 @@ function App() {
         <Flex direction="column" flex="1" minW="0" className="rail-plain">
           <Approvals approvals={approvals} bots={bots} onResolve={resolveApproval} />
           <Flex as="main" className="content" direction="column" flex="1" minH="0">
-            {view === "global" && globalCfg ? (
-              <GlobalSettings global={globalCfg} onSave={onSaveGlobal} />
-            ) : selectedBot && globalCfg ? (
+            {view === "global" && globalCfg && manifests ? (
+              <GlobalSettings
+                global={globalCfg}
+                manifests={manifests}
+                onSave={onSaveGlobal}
+              />
+            ) : selectedBot && globalCfg && manifests ? (
               <BotView
                 key={selectedBot.id}
                 bot={selectedBot}
                 global={globalCfg}
+                manifests={manifests}
                 events={feeds.get(selectedBot.id) ?? []}
                 running={runningIds.has(selectedBot.id)}
                 busy={busyState.get(selectedBot.id)?.label}

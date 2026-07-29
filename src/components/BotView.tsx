@@ -13,7 +13,7 @@ import {
   type BotConfig,
   defaultPolicy,
   type GlobalConfig,
-  TOOL_OPS,
+  type ToolManifest,
   type ToolPolicy,
   toolLabel,
 } from "../lib/config"
@@ -40,6 +40,7 @@ const TABS = [
 export function BotView({
   bot,
   global,
+  manifests,
   events,
   running,
   busy,
@@ -52,6 +53,7 @@ export function BotView({
 }: {
   bot: BotConfig
   global: GlobalConfig
+  manifests: ToolManifest[]
   events: ActivityEvent[]
   running: boolean
   busy?: string | null
@@ -288,7 +290,7 @@ export function BotView({
                   ) : null}
                   {global.tools.map((tool) => {
                     const enabled = cfg.enabledToolIds.includes(tool.id)
-                    const ops = TOOL_OPS[tool.type] ?? []
+                    const ops = manifests.find((m) => m.kind === tool.type)?.ops ?? []
                     return (
                       <Flex key={tool.id} align="start" gap="3">
                         <Flex align="center" minH="40px" flexShrink="0">

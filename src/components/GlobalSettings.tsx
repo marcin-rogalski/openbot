@@ -3,9 +3,11 @@ import { useEffect, useState } from "react"
 import { connectDrive, driveStatus } from "../lib/bot"
 import {
   type GlobalConfig,
+  manifestFor,
   newToolInstance,
   saveGlobal,
-  TOOL_CLASSES,
+  type ToolInstance,
+  type ToolManifest,
   toolLabel,
 } from "../lib/config"
 import { ActionBar } from "./ActionBar"
@@ -23,9 +25,11 @@ const TABS = [
 
 export function GlobalSettings({
   global,
+  manifests,
   onSave,
 }: {
   global: GlobalConfig
+  manifests: ToolManifest[]
   onSave: (g: GlobalConfig) => void
 }) {
   const [tab, setTab] = useState("tools")
@@ -93,9 +97,9 @@ export function GlobalSettings({
                     </Menu.Trigger>
                     <Menu.Positioner>
                       <Menu.Content>
-                        {TOOL_CLASSES.map((cls) => (
-                          <Menu.Item key={cls.type} value={cls.type}>
-                            {cls.icon} {cls.label}
+                        {manifests.map((m) => (
+                          <Menu.Item key={m.kind} value={m.kind}>
+                            {m.icon} {m.label}
                           </Menu.Item>
                         ))}
                       </Menu.Content>
@@ -130,62 +134,43 @@ export function GlobalSettings({
                         value={tool.name}
                         onChange={(e) => updateTool(tool.id, { name: e.target.value })}
                       />
-                      {tool.type === "google_drive" ? (
-                        <Section
-                          title="Google Drive"
-                          caption="OAuth Desktop client (Drive API enabled). Same client id shares one sign-in."
-                        >
-                          <FloatingField
-                            label="Client ID"
-                            value={tool.clientId}
-                            onChange={(e) =>
-                              updateTool(tool.id, { clientId: e.target.value })
-                            }
-                          />
-                          <FloatingField
-                            label="Client secret"
-                            type="password"
-                            value={tool.clientSecret}
-                            onChange={(e) =>
-                              updateTool(tool.id, { clientSecret: e.target.value })
-                            }
-                          />
-                          <FloatingField
-                            label="Folder ID"
-                            value={tool.folderId}
-                            onChange={(e) =>
-                              updateTool(tool.id, { folderId: e.target.value })
-                            }
-                          />
-                          <Flex align="center" gap="3">
-                            <Button
-                              variant="subtle"
-                              colorPalette="brand"
-                              onClick={() => onConnect(tool.id)}
-                            >
-                              Connect
-                            </Button>
-                            <Text fontSize="sm" color="fg.muted">
-                              {status}
-                            </Text>
-                          </Flex>
-                        </Section>
-                      ) : null}
-                      {tool.type === "web_search" ? (
-                        <Section
-                          title="Keenable"
-                          caption="Create an API key at keenable.ai/console. Stored locally."
-                        >
-                          <FloatingField
-                            label="API key"
-                            type="password"
-                            value={tool.apiKey}
-                            onChange={(e) =>
-                              updateTool(tool.id, { apiKey: e.target.value })
-                            }
-                          />
-                        </Section>
-                      ) : null}
+                      {(() => {
+                        const m = manifestFor(tool.type)
+                        if (!m || (m.configFields.length === 0 && !m.oauth)) return null
+                        return (
+                          <Section title={m.label} caption={m.configCaption ?? undefined}>
+                            {m.configFields.map((field) => (
+                              <FloatingField
+                                key={field.key}
+                                label={field.label}
+                                type={field.secret ? "password" : undefined}
+                                value={
+                                  (tool[field.key as keyof ToolInstance] as string) ?? ""
+                                }
+                                onChange={(e) =>
+                                  updateTool(tool.id, {
+                                    [field.key]: e.target.value,
+                                  } as Partial<ToolInstance>)
+                                }
+                              />
+                            ))}
+                            {m.oauth ? (
+                              <Flex align="center" gap="3">
+                                <Button
+                                  variant="subtle"
+                                  colorPalette="brand"
+                                  onClick={() => onConnect(tool.id)}
+                                >
+                                  Connect
+                                </Button>
+                                <Text fontSize="sm" color="fg.muted">
+                                  {status}
+                                </Text>
+                              </Flex>
+                            ) : null}
+                          </Section>
+                        )
+                      })()}
                       <DangerZone>
                         <Button
                           size="sm"

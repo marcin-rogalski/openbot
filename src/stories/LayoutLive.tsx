@@ -8,7 +8,23 @@ import {
   type GlobalConfig,
   newBot,
   newToolInstance,
+  type ToolManifest,
 } from "../lib/config"
+
+const DEMO_MANIFESTS: ToolManifest[] = [
+  {
+    kind: "google_drive",
+    label: "Google Drive",
+    icon: "📁",
+    oauth: true,
+    configCaption: null,
+    configFields: [],
+    ops: [
+      { op: "search", label: "Search files", write: false },
+      { op: "create", label: "Create file", write: true },
+    ],
+  },
+]
 
 // A working example of the shell: real Sidebar-style rail + the real BotView,
 // with the content column flat/borderless and the bots label above its panel.
@@ -148,6 +164,7 @@ export function LayoutLive() {
             key={selected.id}
             bot={selected}
             global={global}
+            manifests={DEMO_MANIFESTS}
             events={events}
             running={selected.id === bots[0].id}
             metrics={{ prefillTps: null, inferenceTps: 42 }}

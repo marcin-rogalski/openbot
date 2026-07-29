@@ -5,6 +5,7 @@
 
 use serde_json::Value;
 
+use super::manifest::{ManifestField, ManifestOp, ToolManifest};
 use crate::infrastructure::config::ToolInstance;
 
 /// The persisted `ToolInstance.type` this module handles.
@@ -15,6 +16,30 @@ pub const SLUG: &str = "web";
 /// A web tool is usable once it carries a provider API key.
 pub fn ready(instance: &ToolInstance) -> bool {
     !instance.api_key.trim().is_empty()
+}
+
+/// This tool's schema — config field + ops — for the frontend.
+pub fn manifest() -> ToolManifest {
+    ToolManifest {
+        kind: KIND,
+        label: "Web Search",
+        icon: "🔎",
+        oauth: false,
+        config_caption: Some("Create an API key at keenable.ai/console. Stored locally."),
+        config_fields: vec![ManifestField {
+            key: "apiKey",
+            label: "API key",
+            secret: true,
+        }],
+        ops: WebOp::ALL
+            .iter()
+            .map(|o| ManifestOp {
+                op: o.suffix(),
+                label: o.label(),
+                write: false,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +62,14 @@ impl WebOp {
         match self {
             WebOp::Search => "Search the web; returns a list of results (title, url, excerpt).",
             WebOp::Fetch => "Fetch a web page by url and return its main text content.",
+        }
+    }
+
+    /// Short label for the approvals UI (mirrors the frontend's old `TOOL_OPS`).
+    pub fn label(self) -> &'static str {
+        match self {
+            WebOp::Search => "Web search",
+            WebOp::Fetch => "Fetch a page",
         }
     }
 

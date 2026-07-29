@@ -1,5 +1,42 @@
-import { describe, expect, it } from "vitest"
-import { defaultPolicy, newBot, newToolInstance, toolIcon, toolLabel } from "./config"
+import { beforeAll, describe, expect, it, vi } from "vitest"
+
+// The tool schema now comes from the backend; seed the manifest cache so the
+// icon/label/instance helpers resolve known types.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async () => [
+    {
+      kind: "google_drive",
+      label: "Google Drive",
+      icon: "📁",
+      oauth: true,
+      configCaption: null,
+      configFields: [],
+      ops: [],
+    },
+    {
+      kind: "web_search",
+      label: "Web Search",
+      icon: "🔎",
+      oauth: false,
+      configCaption: null,
+      configFields: [],
+      ops: [],
+    },
+  ]),
+}))
+
+import {
+  defaultPolicy,
+  loadManifests,
+  newBot,
+  newToolInstance,
+  toolIcon,
+  toolLabel,
+} from "./config"
+
+beforeAll(async () => {
+  await loadManifests()
+})
 
 describe("config helpers", () => {
   it("defaultPolicy: reads allow, writes ask", () => {

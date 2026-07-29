@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core"
 import { LazyStore } from "@tauri-apps/plugin-store"
 
 // Mirrors src-tauri/src/config.rs. settings.json holds two keys: `global`
@@ -19,37 +20,34 @@ export type ToolInstance = {
   apiKey: string
 }
 
-/** Available tool classes the "+" menu offers. Add new providers here. */
-export type ToolClass = { type: string; label: string; icon: string }
-export const TOOL_CLASSES: ToolClass[] = [
-  { type: "google_drive", label: "Google Drive", icon: "📁" },
-  { type: "web_search", label: "Web Search", icon: "🔎" },
-]
+// --- Tool manifest (single source of truth, from the Rust backend) ----------
+// Tool classes, their config fields, and their ops are owned by the Rust tool
+// modules and fetched via `tool_manifests`. The frontend renders every tool
+// editor and approval list from these — no hardcoded tables here.
 
-/** The callable ops each tool class exposes, mirroring the backend `DriveOp`/
- * `WebOp` suffixes. `write` sets the default policy (writes → ask, reads → allow)
- * and drives the per-bot approval editor. */
-export type ToolOp = { op: string; label: string; write: boolean }
-export const TOOL_OPS: Record<string, ToolOp[]> = {
-  google_drive: [
-    { op: "search", label: "Search files", write: false },
-    { op: "ask", label: "Ask (knowledge base)", write: false },
-    { op: "list_sources", label: "List indexed sources", write: false },
-    { op: "list", label: "List files", write: false },
-    { op: "read", label: "Read a file or link", write: false },
-    { op: "save_link", label: "Save a Drive link", write: true },
-    { op: "transcribe_link", label: "Transcribe a Drive link", write: true },
-    { op: "create", label: "Create file", write: true },
-    { op: "create_folder", label: "Create folder", write: true },
-    { op: "update", label: "Update file", write: true },
-    { op: "delete", label: "Delete (trash) file", write: true },
-    { op: "reindex", label: "Rebuild the index", write: true },
-    { op: "backfill_attachments", label: "Backfill attachments", write: true },
-  ],
-  web_search: [
-    { op: "search", label: "Web search", write: false },
-    { op: "fetch", label: "Fetch a page", write: false },
-  ],
+export type ManifestField = { key: string; label: string; secret: boolean }
+export type ManifestOp = { op: string; label: string; write: boolean }
+export type ToolManifest = {
+  kind: string
+  label: string
+  icon: string
+  oauth: boolean
+  configCaption: string | null
+  configFields: ManifestField[]
+  ops: ManifestOp[]
+}
+
+/** Cache populated once at boot by `loadManifests`, read by the sync helpers
+ * below (which run during render, after the cache is filled). */
+let MANIFESTS: ToolManifest[] = []
+
+export async function loadManifests(): Promise<ToolManifest[]> {
+  MANIFESTS = await invoke<ToolManifest[]>("tool_manifests")
+  return MANIFESTS
+}
+
+export function manifestFor(type: string): ToolManifest | undefined {
+  return MANIFESTS.find((m) => m.kind === type)
 }
 
 /** The default policy for an op when no explicit per-bot policy is set. */
@@ -58,11 +56,11 @@ export function defaultPolicy(write: boolean): ToolPolicy {
 }
 
 export function toolIcon(type: string): string {
-  return TOOL_CLASSES.find((c) => c.type === type)?.icon ?? "🔧"
+  return manifestFor(type)?.icon ?? "🔧"
 }
 
 export function toolLabel(type: string): string {
-  return TOOL_CLASSES.find((c) => c.type === type)?.label ?? type
+  return manifestFor(type)?.label ?? type
 }
 
 export type GlobalConfig = {

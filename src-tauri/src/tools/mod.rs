@@ -21,9 +21,21 @@ mod drive;
 mod memory;
 mod web;
 
+// Shared tool boundary: the manifest (schema for the UI) + its Tauri command.
+pub mod commands;
+pub mod manifest;
+
 use drive::DriveOp;
+use manifest::ToolManifest;
 use memory::MemoryOp;
 use web::WebOp;
+
+/// The schema of every configurable tool class, for the frontend to render
+/// editors + approvals from. The single source of truth — `config.ts` fetches
+/// this instead of hardcoding tool classes/ops/fields.
+pub fn manifests() -> Vec<ToolManifest> {
+    vec![drive::manifest(), web::manifest()]
+}
 
 /// A Drive-link transcription background job. Re-exported for `discord.rs`,
 /// which runs it with channel context.
@@ -540,5 +552,20 @@ mod tests {
         assert!(DriveOp::Create.write());
         assert!(!DriveOp::Search.write());
         assert_eq!(DriveOp::Ask.suffix(), "ask");
+    }
+
+    #[test]
+    fn manifests_cover_every_op() {
+        let ms = manifests();
+        let drive = ms.iter().find(|m| m.kind == drive::KIND).unwrap();
+        assert_eq!(drive.ops.len(), DriveOp::ALL.len());
+        assert!(drive.oauth);
+        let web = ms.iter().find(|m| m.kind == web::KIND).unwrap();
+        assert_eq!(web.ops.len(), WebOp::ALL.len());
+        // Every op label is non-empty and every field key is set.
+        for m in &ms {
+            assert!(m.ops.iter().all(|o| !o.label.is_empty()));
+            assert!(m.config_fields.iter().all(|f| !f.key.is_empty()));
+        }
     }
 }

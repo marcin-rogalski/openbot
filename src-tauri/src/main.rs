@@ -54,7 +54,8 @@ fn main() {
             gdrive::drive_status,
             infrastructure::driving::memory::get_memories,
             infrastructure::driving::memory::delete_memory,
-            infrastructure::driving::memory::clear_memories
+            infrastructure::driving::memory::clear_memories,
+            tools::commands::tool_manifests
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

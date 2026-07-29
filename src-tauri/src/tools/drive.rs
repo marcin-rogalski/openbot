@@ -6,6 +6,7 @@
 use serde_json::Value;
 use tauri::AppHandle;
 
+use super::manifest::{ManifestField, ManifestOp, ToolManifest};
 use super::Progress;
 use crate::infrastructure::bot;
 use crate::infrastructure::config::{self, BotConfig, ToolInstance};
@@ -22,6 +23,44 @@ pub fn ready(instance: &ToolInstance) -> bool {
     !instance.client_id.trim().is_empty()
         && !instance.client_secret.trim().is_empty()
         && !instance.folder_id.trim().is_empty()
+}
+
+/// This tool's schema — OAuth config fields + ops — for the frontend.
+pub fn manifest() -> ToolManifest {
+    ToolManifest {
+        kind: KIND,
+        label: "Google Drive",
+        icon: "📁",
+        oauth: true,
+        config_caption: Some(
+            "OAuth Desktop client (Drive API enabled). Same client id shares one sign-in.",
+        ),
+        config_fields: vec![
+            ManifestField {
+                key: "clientId",
+                label: "Client ID",
+                secret: false,
+            },
+            ManifestField {
+                key: "clientSecret",
+                label: "Client secret",
+                secret: true,
+            },
+            ManifestField {
+                key: "folderId",
+                label: "Folder ID",
+                secret: false,
+            },
+        ],
+        ops: DriveOp::ALL
+            .iter()
+            .map(|o| ManifestOp {
+                op: o.suffix(),
+                label: o.label(),
+                write: o.write(),
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -88,6 +127,25 @@ impl DriveOp {
                 | DriveOp::SaveLink
                 | DriveOp::TranscribeLink
         )
+    }
+
+    /// Short label for the approvals UI (mirrors the frontend's old `TOOL_OPS`).
+    pub fn label(self) -> &'static str {
+        match self {
+            DriveOp::Search => "Search files",
+            DriveOp::Ask => "Ask (knowledge base)",
+            DriveOp::ListSources => "List indexed sources",
+            DriveOp::List => "List files",
+            DriveOp::Read => "Read a file or link",
+            DriveOp::Create => "Create file",
+            DriveOp::CreateFolder => "Create folder",
+            DriveOp::Update => "Update file",
+            DriveOp::Delete => "Delete (trash) file",
+            DriveOp::Reindex => "Rebuild the index",
+            DriveOp::Backfill => "Backfill attachments",
+            DriveOp::SaveLink => "Save a Drive link",
+            DriveOp::TranscribeLink => "Transcribe a Drive link",
+        }
     }
 
     pub fn description(self, folder_name: &str) -> String {
