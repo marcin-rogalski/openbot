@@ -136,91 +136,29 @@ impl ResolvedTool {
     }
 
     /// A friendly one-liner describing what this call did, for the folded
-    /// (non-verbose) activity feed.
+    /// (non-verbose) activity feed. Each tool owns its own wording; this just
+    /// dispatches and appends a failure marker.
     pub fn summary(&self, args: &Value, result: &str) -> String {
-        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
-        let failed = result.starts_with("error:");
-        match &self.kind {
-            ToolKind::Drive { op, .. } => match op {
-                DriveOp::Search => quoted(
-                    "🔎 Searched Google Drive",
-                    str_arg("query"),
-                    count_prefix(result, "- id="),
-                ),
-                DriveOp::Ask => quoted(
-                    "📚 Consulted the knowledge base",
-                    str_arg("question"),
-                    count_prefix(result, "### "),
-                ),
-                DriveOp::ListSources => "📇 Listed knowledge sources".into(),
-                DriveOp::Reindex => "🔄 Rebuilt the knowledge index".into(),
-                DriveOp::List => {
-                    format!(
-                        "📁 Listed {} file(s) in Google Drive",
-                        count_prefix(result, "- id=")
-                    )
-                }
-                DriveOp::Read => "📄 Read a file from Google Drive".into(),
-                DriveOp::Create => "📝 Created a file in Google Drive".into(),
-                DriveOp::CreateFolder => "📁 Created a folder in Google Drive".into(),
-                DriveOp::Update => "✏️ Updated a file in Google Drive".into(),
-                DriveOp::Delete => "🗑️ Moved a Google Drive file to trash".into(),
-                DriveOp::Backfill => "📎 Backfilled attachments from recent messages".into(),
-                DriveOp::SaveLink => "📥 Saved a linked file to Google Drive".into(),
-                DriveOp::TranscribeLink => "🎙️ Transcribed a linked file".into(),
-            },
-            ToolKind::Web { op, .. } => match op {
-                WebOp::Search => quoted(
-                    "🌐 Searched the web",
-                    str_arg("query"),
-                    count_prefix(result, "- "),
-                ),
-                WebOp::Fetch => format!("🌐 Read {}", domain_of(str_arg("url"))),
-            },
-            ToolKind::Memory { op } => match op {
-                MemoryOp::Save => {
-                    let kind = if str_arg("kind") == "rule" {
-                        "rule"
-                    } else {
-                        "note"
-                    };
-                    format!("🧠 Remembered a {kind}")
-                }
-                MemoryOp::Delete => "🧠 Forgot a memory".into(),
-            },
+        let base = match &self.kind {
+            ToolKind::Drive { op, .. } => op.summary(args, result),
+            ToolKind::Web { op, .. } => op.summary(args, result),
+            ToolKind::Memory { op } => op.summary(args),
+        };
+        base + if result.starts_with("error:") {
+            " (failed)"
+        } else {
+            ""
         }
-        .to_string()
-            + if failed { " (failed)" } else { "" }
     }
 
     /// Present-tense label shown on Discord *while* the tool runs, so the user
     /// sees what the bot is doing (before any progress or the final summary).
+    /// Owned per-tool; this dispatches to the active op.
     pub fn active_label(&self, args: &Value) -> String {
-        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
         match &self.kind {
-            ToolKind::Drive { op, .. } => match op {
-                DriveOp::Search => "🔎 Searching Google Drive…".into(),
-                DriveOp::Ask => "📚 Consulting the knowledge base…".into(),
-                DriveOp::ListSources => "📇 Listing knowledge sources…".into(),
-                DriveOp::Reindex => "🔄 Rebuilding the knowledge index…".into(),
-                DriveOp::List => "📁 Listing Google Drive…".into(),
-                DriveOp::Read => "📄 Reading a file…".into(),
-                DriveOp::Create => "📝 Creating a file…".into(),
-                DriveOp::CreateFolder => "📁 Creating a folder…".into(),
-                DriveOp::Update => "✏️ Updating a file…".into(),
-                DriveOp::Delete => "🗑️ Moving a file to trash…".into(),
-                DriveOp::Backfill => "📎 Archiving recent attachments…".into(),
-                DriveOp::SaveLink => "📥 Saving a linked file…".into(),
-                DriveOp::TranscribeLink => "🎙️ Transcribing a linked file…".into(),
-            },
-            ToolKind::Web { op, .. } => match op {
-                WebOp::Search => "🌐 Searching the web…".into(),
-                WebOp::Fetch => format!("🌐 Reading {}…", domain_of(str_arg("url"))),
-            },
-            ToolKind::Memory { op } => match op {
-                MemoryOp::Save => "🧠 Saving a memory…".into(),
-                MemoryOp::Delete => "🧠 Forgetting a memory…".into(),
-            },
+            ToolKind::Drive { op, .. } => op.active_label(),
+            ToolKind::Web { op, .. } => op.active_label(args),
+            ToolKind::Memory { op } => op.active_label(),
         }
     }
 
@@ -261,8 +199,8 @@ pub fn catalog(global: &GlobalConfig, bot: &BotConfig) -> Vec<ResolvedTool> {
         };
 
         match instance.kind.as_str() {
-            "google_drive" if instance.drive_ready() => {
-                let slug = unique_slug(&instance.name, "drive", &mut used_slugs);
+            drive::KIND if drive::ready(instance) => {
+                let slug = unique_slug(&instance.name, drive::SLUG, &mut used_slugs);
                 for op in DriveOp::ALL {
                     tools.push(ResolvedTool {
                         call_name: format!("{slug}_{}", op.suffix()),
@@ -278,8 +216,8 @@ pub fn catalog(global: &GlobalConfig, bot: &BotConfig) -> Vec<ResolvedTool> {
                     });
                 }
             }
-            "web_search" if instance.web_ready() => {
-                let slug = unique_slug(&instance.name, "web", &mut used_slugs);
+            web::KIND if web::ready(instance) => {
+                let slug = unique_slug(&instance.name, web::SLUG, &mut used_slugs);
                 for op in WebOp::ALL {
                     tools.push(ResolvedTool {
                         call_name: format!("{slug}_{}", op.suffix()),
@@ -464,7 +402,7 @@ pub fn attachment_sinks(global: &GlobalConfig, bot: &BotConfig) -> Vec<Attachmen
     let mut sinks = Vec::new();
     for tool_id in &bot.enabled_tool_ids {
         if let Some(instance) = global.tool(tool_id) {
-            if instance.kind == "google_drive" && instance.drive_ready() {
+            if instance.kind == drive::KIND && drive::ready(instance) {
                 sinks.push(AttachmentSink::Drive {
                     instance_id: instance.id.clone(),
                     instance_name: instance.name.clone(),
@@ -501,7 +439,7 @@ fn unique_slug(name: &str, fallback: &str, used: &mut HashSet<String>) -> String
 }
 
 /// `"{prefix} for \"{query}\" — {n} result(s)"`, tidily handling an empty query.
-fn quoted(prefix: &str, query: &str, count: usize) -> String {
+pub(super) fn quoted(prefix: &str, query: &str, count: usize) -> String {
     let query = query.trim();
     let head = if query.is_empty() {
         prefix.to_string()
@@ -512,12 +450,12 @@ fn quoted(prefix: &str, query: &str, count: usize) -> String {
 }
 
 /// Count result lines beginning with `prefix` (one per item in our formats).
-fn count_prefix(result: &str, prefix: &str) -> usize {
+pub(super) fn count_prefix(result: &str, prefix: &str) -> usize {
     result.lines().filter(|l| l.starts_with(prefix)).count()
 }
 
 /// The host of a URL (without scheme or leading `www.`), for a compact summary.
-fn domain_of(url: &str) -> String {
+pub(super) fn domain_of(url: &str) -> String {
     let after_scheme = url.rsplit("://").next().unwrap_or(url);
     let host = after_scheme.split('/').next().unwrap_or(after_scheme);
     host.strip_prefix("www.").unwrap_or(host).to_string()

@@ -1,7 +1,21 @@
 //! The web-search tool: `search` + `fetch` ops, executed via the web driving
-//! adapter (Keenable behind the `WebSearch`/`WebFetch` ports).
+//! adapter (Keenable behind the `WebSearch`/`WebFetch` ports). This module owns
+//! everything that makes a web tool a web tool: its config schema (`KIND`,
+//! `ready`), its ops, and the footer states it shows while running.
 
 use serde_json::Value;
+
+use crate::infrastructure::config::ToolInstance;
+
+/// The persisted `ToolInstance.type` this module handles.
+pub const KIND: &str = "web_search";
+/// Slug fallback when the instance name doesn't yield one.
+pub const SLUG: &str = "web";
+
+/// A web tool is usable once it carries a provider API key.
+pub fn ready(instance: &ToolInstance) -> bool {
+    !instance.api_key.trim().is_empty()
+}
 
 #[derive(Clone, Copy)]
 pub enum WebOp {
@@ -32,6 +46,29 @@ impl WebOp {
             WebOp::Fetch => "{\"url\": string}",
         }
     }
+
+    /// Present-tense left-footer label shown while the op runs.
+    pub(super) fn active_label(self, args: &Value) -> String {
+        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
+        match self {
+            WebOp::Search => "🌐 Searching the web…".into(),
+            WebOp::Fetch => format!("🌐 Reading {}…", super::domain_of(str_arg("url"))),
+        }
+    }
+
+    /// Past-tense one-liner for the folded activity feed (no failure suffix —
+    /// the caller appends it).
+    pub(super) fn summary(self, args: &Value, result: &str) -> String {
+        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
+        match self {
+            WebOp::Search => super::quoted(
+                "🌐 Searched the web",
+                str_arg("query"),
+                super::count_prefix(result, "- "),
+            ),
+            WebOp::Fetch => format!("🌐 Read {}", super::domain_of(str_arg("url"))),
+        }
+    }
 }
 
 /// Execute a web op with the instance's API key.
@@ -49,5 +86,18 @@ pub(super) async fn execute(op: WebOp, api_key: &str, args: &Value) -> String {
             Ok(content) => content,
             Err(e) => format!("error: {e}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_needs_api_key() {
+        let mut t = ToolInstance::default();
+        assert!(!ready(&t));
+        t.api_key = "k".into();
+        assert!(ready(&t));
     }
 }

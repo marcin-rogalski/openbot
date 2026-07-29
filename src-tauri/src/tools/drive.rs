@@ -8,9 +8,21 @@ use tauri::AppHandle;
 
 use super::Progress;
 use crate::infrastructure::bot;
-use crate::infrastructure::config::{self, BotConfig};
+use crate::infrastructure::config::{self, BotConfig, ToolInstance};
 use crate::infrastructure::driven::gdrive;
 use crate::infrastructure::driving::drive as drive_ui;
+
+/// The persisted `ToolInstance.type` this module handles.
+pub const KIND: &str = "google_drive";
+/// Slug fallback when the instance name doesn't yield one.
+pub const SLUG: &str = "drive";
+
+/// A Drive tool is usable once it carries its OAuth client and target folder.
+pub fn ready(instance: &ToolInstance) -> bool {
+    !instance.client_id.trim().is_empty()
+        && !instance.client_secret.trim().is_empty()
+        && !instance.folder_id.trim().is_empty()
+}
 
 #[derive(Clone, Copy)]
 pub enum DriveOp {
@@ -148,6 +160,57 @@ impl DriveOp {
             DriveOp::SaveLink | DriveOp::TranscribeLink => {
                 "{\"url\": string (a Google Drive link or file id)}"
             }
+        }
+    }
+
+    /// Present-tense left-footer label shown while the op runs.
+    pub(super) fn active_label(self) -> String {
+        match self {
+            DriveOp::Search => "🔎 Searching Google Drive…".into(),
+            DriveOp::Ask => "📚 Consulting the knowledge base…".into(),
+            DriveOp::ListSources => "📇 Listing knowledge sources…".into(),
+            DriveOp::Reindex => "🔄 Rebuilding the knowledge index…".into(),
+            DriveOp::List => "📁 Listing Google Drive…".into(),
+            DriveOp::Read => "📄 Reading a file…".into(),
+            DriveOp::Create => "📝 Creating a file…".into(),
+            DriveOp::CreateFolder => "📁 Creating a folder…".into(),
+            DriveOp::Update => "✏️ Updating a file…".into(),
+            DriveOp::Delete => "🗑️ Moving a file to trash…".into(),
+            DriveOp::Backfill => "📎 Archiving recent attachments…".into(),
+            DriveOp::SaveLink => "📥 Saving a linked file…".into(),
+            DriveOp::TranscribeLink => "🎙️ Transcribing a linked file…".into(),
+        }
+    }
+
+    /// Past-tense one-liner for the folded activity feed (no failure suffix —
+    /// the caller appends it).
+    pub(super) fn summary(self, args: &Value, result: &str) -> String {
+        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
+        match self {
+            DriveOp::Search => super::quoted(
+                "🔎 Searched Google Drive",
+                str_arg("query"),
+                super::count_prefix(result, "- id="),
+            ),
+            DriveOp::Ask => super::quoted(
+                "📚 Consulted the knowledge base",
+                str_arg("question"),
+                super::count_prefix(result, "### "),
+            ),
+            DriveOp::ListSources => "📇 Listed knowledge sources".into(),
+            DriveOp::Reindex => "🔄 Rebuilt the knowledge index".into(),
+            DriveOp::List => format!(
+                "📁 Listed {} file(s) in Google Drive",
+                super::count_prefix(result, "- id=")
+            ),
+            DriveOp::Read => "📄 Read a file from Google Drive".into(),
+            DriveOp::Create => "📝 Created a file in Google Drive".into(),
+            DriveOp::CreateFolder => "📁 Created a folder in Google Drive".into(),
+            DriveOp::Update => "✏️ Updated a file in Google Drive".into(),
+            DriveOp::Delete => "🗑️ Moved a Google Drive file to trash".into(),
+            DriveOp::Backfill => "📎 Backfilled attachments from recent messages".into(),
+            DriveOp::SaveLink => "📥 Saved a linked file to Google Drive".into(),
+            DriveOp::TranscribeLink => "🎙️ Transcribed a linked file".into(),
         }
     }
 }
@@ -384,4 +447,19 @@ pub async fn run_transcription(
         }
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_needs_client_and_folder() {
+        let mut t = ToolInstance::default();
+        assert!(!ready(&t));
+        t.client_id = "a".into();
+        t.client_secret = "b".into();
+        t.folder_id = "c".into();
+        assert!(ready(&t));
+    }
 }

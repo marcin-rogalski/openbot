@@ -43,6 +43,31 @@ impl MemoryOp {
             MemoryOp::Delete => "{\"id\": string}",
         }
     }
+
+    /// Present-tense left-footer label shown while the op runs.
+    pub(super) fn active_label(self) -> String {
+        match self {
+            MemoryOp::Save => "🧠 Saving a memory…".into(),
+            MemoryOp::Delete => "🧠 Forgetting a memory…".into(),
+        }
+    }
+
+    /// Past-tense one-liner for the folded activity feed (no failure suffix —
+    /// the caller appends it).
+    pub(super) fn summary(self, args: &Value) -> String {
+        let str_arg = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
+        match self {
+            MemoryOp::Save => {
+                let kind = if str_arg("kind") == "rule" {
+                    "rule"
+                } else {
+                    "note"
+                };
+                format!("🧠 Remembered a {kind}")
+            }
+            MemoryOp::Delete => "🧠 Forgot a memory".into(),
+        }
+    }
 }
 
 /// Execute a memory op for a bot.

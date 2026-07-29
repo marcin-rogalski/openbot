@@ -57,18 +57,6 @@ impl Default for ToolInstance {
     }
 }
 
-impl ToolInstance {
-    pub fn drive_ready(&self) -> bool {
-        !self.client_id.trim().is_empty()
-            && !self.client_secret.trim().is_empty()
-            && !self.folder_id.trim().is_empty()
-    }
-
-    pub fn web_ready(&self) -> bool {
-        !self.api_key.trim().is_empty()
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GlobalConfig {
@@ -374,17 +362,6 @@ mod tests {
         b.discord_token = "t".into();
         b.model.model_name = "m".into();
         assert!(b.is_ready());
-    }
-
-    #[test]
-    fn tool_instance_ready_checks() {
-        let mut t = ToolInstance::default();
-        assert!(!t.drive_ready());
-        t.client_id = "a".into();
-        t.client_secret = "b".into();
-        t.folder_id = "c".into();
-        assert!(t.drive_ready());
-        assert!(!ToolInstance::default().web_ready());
     }
 
     #[test]

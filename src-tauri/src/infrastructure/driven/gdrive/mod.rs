@@ -649,7 +649,10 @@ pub async fn connect_drive(app: AppHandle, tool_id: String) -> Result<String, St
     let Some(tool) = global.tool(&tool_id).cloned() else {
         return Err("tool not found".into());
     };
-    if !tool.drive_ready() {
+    if tool.client_id.trim().is_empty()
+        || tool.client_secret.trim().is_empty()
+        || tool.folder_id.trim().is_empty()
+    {
         return Err("Fill in the client id, secret, and folder id first.".into());
     }
     whoami(&app, &tool.client_id, &tool.client_secret).await
