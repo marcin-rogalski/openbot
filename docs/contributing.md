@@ -65,8 +65,12 @@ each module; frontend as `*.test.ts(x)` beside the file under test.
 Tools are dispatched by `ToolKind` in `src-tauri/src/tools.rs`. To add one:
 
 1. **Backend** — add the operations (an `Op` enum with `name`, `is_write`, `summary`,
-   `args`, `description`), implement `execute`, and wire it into the tool dispatch. If the
-   tool has its own network client, add a module (mirroring `websearch.rs` / `gdrive/`).
+   `args`, `description`), and wire them into `execute` in `src-tauri/src/tools.rs`. For the
+   capability itself, add a vertical slice (see [hexagonal.md](hexagonal.md)): a
+   `domain/` type if it has business rules, an `application/ports/` contract + `usecases/`,
+   an `infrastructure/driven/` adapter implementing the port, an `infrastructure/driving/`
+   adapter that `execute` calls, and a `compose/` builder wiring them — mirroring the
+   existing web / drive / knowledge slices.
 2. **Frontend** — register the tool class in `src/lib/config.ts` (`TOOL_CLASSES`) and its
    operations in `TOOL_OPS` (mark writes with `write: true` so they default to *ask*). Add
    any config fields to `ToolInstance` and the settings UI.

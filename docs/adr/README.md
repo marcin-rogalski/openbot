@@ -3,9 +3,13 @@
 Short records of significant architecture decisions — the context, the decision, and its
 consequences. Newest decisions may supersede older ones (noted in **Status**).
 
-These ADRs describe the **target** "core + tool plugins" architecture we're migrating toward.
-They are design, not yet implemented; the migration is incremental and test-guarded (see
-ADR-0001). The current code is described in [../architecture.md](../architecture.md).
+These ADRs record the "core + tool plugins" / ports-and-adapters direction. The Rust backend
+has since been **implemented** on this architecture (with some details refined during the
+build — e.g. adapters live in `infrastructure/{driven,driving}`, the composition root is
+`compose/`, and the `TOOL_CALL` convention sits in `tools.rs` outside the hexagon rather than
+in the AI adapter). The ADRs are kept as point-in-time decisions; the **current, as-built**
+layout is the source of truth in [../hexagonal.md](../hexagonal.md) and
+[../architecture.md](../architecture.md).
 
 | ADR | Title | Status |
 |---|---|---|
