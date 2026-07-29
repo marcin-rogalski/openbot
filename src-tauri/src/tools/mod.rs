@@ -14,226 +14,23 @@ use std::collections::HashSet;
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::infrastructure::bot;
-use crate::infrastructure::config::{self, BotConfig, GlobalConfig};
-use crate::infrastructure::driven::gdrive;
+use crate::infrastructure::config::{BotConfig, GlobalConfig};
+
+// One module per tool — each owns its `Op` enum, metadata, and execution.
+mod drive;
+mod memory;
+mod web;
+
+use drive::DriveOp;
+use memory::MemoryOp;
+use web::WebOp;
+
+/// A Drive-link transcription background job. Re-exported for `discord.rs`,
+/// which runs it with channel context.
+pub use drive::run_transcription;
 
 /// Fixed instance id for the per-bot memory tools.
 const MEMORY_INSTANCE: &str = "memory";
-
-// --- Ops --------------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-enum DriveOp {
-    Search,
-    Ask,
-    ListSources,
-    List,
-    Read,
-    Create,
-    CreateFolder,
-    Update,
-    Delete,
-    Reindex,
-    Backfill,
-    SaveLink,
-    TranscribeLink,
-}
-
-impl DriveOp {
-    const ALL: [DriveOp; 13] = [
-        DriveOp::Search,
-        DriveOp::Ask,
-        DriveOp::ListSources,
-        DriveOp::List,
-        DriveOp::Read,
-        DriveOp::Create,
-        DriveOp::CreateFolder,
-        DriveOp::Update,
-        DriveOp::Delete,
-        DriveOp::Reindex,
-        DriveOp::Backfill,
-        DriveOp::SaveLink,
-        DriveOp::TranscribeLink,
-    ];
-
-    fn suffix(self) -> &'static str {
-        match self {
-            DriveOp::Search => "search",
-            DriveOp::Ask => "ask",
-            DriveOp::ListSources => "list_sources",
-            DriveOp::List => "list",
-            DriveOp::Read => "read",
-            DriveOp::Create => "create",
-            DriveOp::CreateFolder => "create_folder",
-            DriveOp::Update => "update",
-            DriveOp::Delete => "delete",
-            DriveOp::Reindex => "reindex",
-            DriveOp::Backfill => "backfill_attachments",
-            DriveOp::SaveLink => "save_link",
-            DriveOp::TranscribeLink => "transcribe_link",
-        }
-    }
-
-    fn write(self) -> bool {
-        matches!(
-            self,
-            DriveOp::Create
-                | DriveOp::CreateFolder
-                | DriveOp::Update
-                | DriveOp::Delete
-                | DriveOp::Reindex
-                | DriveOp::Backfill
-                | DriveOp::SaveLink
-                | DriveOp::TranscribeLink
-        )
-    }
-
-    fn description(self, folder_name: &str) -> String {
-        match self {
-            DriveOp::Search => format!(
-                "Search files in the \"{folder_name}\" Drive folder by content or name (Drive \
-                 indexes PDF text too). Returns a file list — for questions/summaries prefer `ask`."
-            ),
-            DriveOp::Ask => format!(
-                "Answer a question or summarise a topic from the knowledge base built over \
-                 \"{folder_name}\" — hybrid semantic + keyword retrieval across indexed file \
-                 contents, returning cited passages. Prefer this for anything spanning multiple \
-                 files. If it says the index is empty, run `reindex` first."
-            ),
-            DriveOp::ListSources => {
-                format!("List the files currently in the \"{folder_name}\" knowledge index.")
-            }
-            DriveOp::List => format!("List the files in \"{folder_name}\"."),
-            DriveOp::Read => format!(
-                "Read a file's full text by id OR by a pasted Google Drive share link (in \
-                 \"{folder_name}\" or anywhere the link is shared with this bot's account). \
-                 Handles text files, Google Docs/Sheets, and PDFs (text extracted, OCR included). \
-                 Use this to summarise a linked doc without saving it."
-            ),
-            DriveOp::Create => format!("Create a new plain-text file in \"{folder_name}\"."),
-            DriveOp::CreateFolder => format!(
-                "Create a new subfolder in \"{folder_name}\" (or inside another folder by id). \
-                 Returns the new folder id, usable as a `parent` for create."
-            ),
-            DriveOp::Update => "Replace a file's content by id.".into(),
-            DriveOp::Delete => "Move a file to trash by id.".into(),
-            DriveOp::Reindex => format!(
-                "Rebuild the local knowledge index from the files in \"{folder_name}\" (parses + \
-                 embeds each file). Run once to bootstrap the knowledge base, or after bulk changes."
-            ),
-            DriveOp::Backfill => format!(
-                "Scan recent messages in this channel and archive relevant attachments to \
-                 \"{folder_name}\". Use when the user asks to save/archive files posted earlier."
-            ),
-            DriveOp::SaveLink => format!(
-                "Save (copy) a file from a pasted Google Drive link into \"{folder_name}\" and \
-                 index it into the knowledge base. The link must be shared with this bot's Google \
-                 account (or be public). Use when the user pastes a Drive link and wants it kept."
-            ),
-            DriveOp::TranscribeLink => format!(
-                "Transcribe an audio/video file from a pasted Google Drive link. Runs in the \
-                 background: it posts the transcript + summary to this channel when finished (and \
-                 saves them into \"{folder_name}\"), so you get an immediate acknowledgement. Link \
-                 must be accessible to this bot's Google account."
-            ),
-        }
-    }
-
-    fn args(self) -> &'static str {
-        match self {
-            DriveOp::Search => "{\"query\": string}",
-            DriveOp::Ask => {
-                "{\"question\": string, \"k\": number (optional, passages to retrieve)}"
-            }
-            DriveOp::ListSources | DriveOp::Reindex => "{}",
-            DriveOp::List => "{}",
-            DriveOp::Delete => "{\"id\": string}",
-            DriveOp::Read => "{\"id\": string (a Drive file id or a share link/url)}",
-            DriveOp::Create => {
-                "{\"name\": string, \"content\": string, \"parent\": string (optional folder id)}"
-            }
-            DriveOp::CreateFolder => "{\"name\": string, \"parent\": string (optional folder id)}",
-            DriveOp::Update => "{\"id\": string, \"content\": string}",
-            DriveOp::Backfill => "{\"limit\": number (optional, recent messages to scan)}",
-            DriveOp::SaveLink | DriveOp::TranscribeLink => {
-                "{\"url\": string (a Google Drive link or file id)}"
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum WebOp {
-    Search,
-    Fetch,
-}
-
-impl WebOp {
-    const ALL: [WebOp; 2] = [WebOp::Search, WebOp::Fetch];
-
-    fn suffix(self) -> &'static str {
-        match self {
-            WebOp::Search => "search",
-            WebOp::Fetch => "fetch",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            WebOp::Search => "Search the web; returns a list of results (title, url, excerpt).",
-            WebOp::Fetch => "Fetch a web page by url and return its main text content.",
-        }
-    }
-
-    fn args(self) -> &'static str {
-        match self {
-            WebOp::Search => "{\"query\": string}",
-            WebOp::Fetch => "{\"url\": string}",
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum MemoryOp {
-    Save,
-    Delete,
-}
-
-impl MemoryOp {
-    const ALL: [MemoryOp; 2] = [MemoryOp::Save, MemoryOp::Delete];
-
-    fn suffix(self) -> &'static str {
-        match self {
-            MemoryOp::Save => "save",
-            MemoryOp::Delete => "delete",
-        }
-    }
-
-    fn call_name(self) -> &'static str {
-        match self {
-            MemoryOp::Save => "memory_save",
-            MemoryOp::Delete => "memory_delete",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            MemoryOp::Save => {
-                "Remember a fact ('note') or a standing instruction ('rule') for \
-                               future conversations."
-            }
-            MemoryOp::Delete => "Forget a memory by its id.",
-        }
-    }
-
-    fn args(self) -> &'static str {
-        match self {
-            MemoryOp::Save => "{\"kind\": \"note\"|\"rule\", \"text\": string}",
-            MemoryOp::Delete => "{\"id\": string}",
-        }
-    }
-}
 
 // --- Resolved tools ---------------------------------------------------------
 
@@ -603,6 +400,8 @@ pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
     Some(ToolCall { tool, args })
 }
 
+/// Run a resolved tool call; returns a result string (ok or `error: …`).
+/// Dispatches to the owning tool module.
 pub async fn execute(
     app: &AppHandle,
     bot_id: &str,
@@ -610,13 +409,6 @@ pub async fn execute(
     args: &Value,
     progress: &Progress,
 ) -> String {
-    let arg = |key: &str| {
-        args.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
-
     match &tool.kind {
         ToolKind::Drive {
             op,
@@ -625,112 +417,21 @@ pub async fn execute(
             folder_id,
             ..
         } => {
-            let (cid, secret, folder) = (client_id, client_secret, folder_id);
-            let storage = crate::compose::driven::drive_storage(app, cid, secret, folder);
-            use crate::infrastructure::driving::drive as drive_ui;
-            match op {
-                DriveOp::Search => drive_ui::search(&*storage, &arg("query")).await,
-                DriveOp::Ask => {
-                    let Some(bot) = config::load_bot(app, bot_id) else {
-                        return "error: bot config not found".to_string();
-                    };
-                    let k = args
-                        .get("k")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(6)
-                        .clamp(1, 12) as usize;
-                    crate::infrastructure::driving::knowledge::ask(
-                        app,
-                        &bot,
-                        &tool.instance_id,
-                        &arg("question"),
-                        k,
-                    )
-                    .await
-                }
-                DriveOp::ListSources => {
-                    crate::infrastructure::driving::knowledge::list_sources(app, &tool.instance_id)
-                        .await
-                }
-                DriveOp::Reindex => {
-                    let Some(bot) = config::load_bot(app, bot_id) else {
-                        return "error: bot config not found".to_string();
-                    };
-                    crate::infrastructure::driving::knowledge::reindex(
-                        app,
-                        &bot,
-                        &tool.instance_id,
-                        cid,
-                        secret,
-                        folder,
-                        progress,
-                    )
-                    .await
-                }
-                DriveOp::List => drive_ui::list(&*storage).await,
-                DriveOp::Read => drive_ui::read(&*storage, &arg("id")).await,
-                DriveOp::Create => {
-                    drive_ui::create(&*storage, &arg("parent"), &arg("name"), &arg("content")).await
-                }
-                DriveOp::CreateFolder => {
-                    drive_ui::create_folder(&*storage, &arg("parent"), &arg("name")).await
-                }
-                DriveOp::Update => drive_ui::update(&*storage, &arg("id"), &arg("content")).await,
-                DriveOp::Delete => drive_ui::trash(&*storage, &arg("id")).await,
-                // Backfill needs Discord history, so it's intercepted in
-                // discord.rs `run_tool` before reaching here.
-                DriveOp::Backfill => "error: backfill must run with channel context".to_string(),
-                DriveOp::SaveLink => {
-                    let Some(bot) = config::load_bot(app, bot_id) else {
-                        return "error: bot config not found".to_string();
-                    };
-                    crate::infrastructure::driving::ingestion::save_link(
-                        app,
-                        &bot,
-                        &tool.instance_id,
-                        cid,
-                        secret,
-                        folder,
-                        &arg("url"),
-                    )
-                    .await
-                }
-                // Transcription runs as a background job with channel context, so
-                // it's intercepted in discord.rs `run_tool` before reaching here.
-                DriveOp::TranscribeLink => {
-                    "error: transcription must run with channel context".to_string()
-                }
-            }
+            drive::execute(
+                app,
+                bot_id,
+                &tool.instance_id,
+                *op,
+                client_id,
+                client_secret,
+                folder_id,
+                args,
+                progress,
+            )
+            .await
         }
-        ToolKind::Web { op, api_key } => match op {
-            WebOp::Search => {
-                match crate::infrastructure::driving::web::search(api_key, &arg("query")).await {
-                    Ok(results) => results,
-                    Err(e) => format!("error: {e}"),
-                }
-            }
-            WebOp::Fetch => {
-                match crate::infrastructure::driving::web::fetch(api_key, &arg("url")).await {
-                    Ok(content) => content,
-                    Err(e) => format!("error: {e}"),
-                }
-            }
-        },
-        ToolKind::Memory { op } => match op {
-            MemoryOp::Save => {
-                crate::infrastructure::driving::memory::save(
-                    app,
-                    bot_id,
-                    &arg("kind"),
-                    &arg("text"),
-                )
-                .await
-            }
-            MemoryOp::Delete => {
-                crate::infrastructure::driving::memory::delete(app, bot_id, &arg("id"));
-                "forgotten".to_string()
-            }
-        },
+        ToolKind::Web { op, api_key } => web::execute(*op, api_key, args).await,
+        ToolKind::Memory { op } => memory::execute(app, bot_id, *op, args).await,
     }
 }
 
@@ -775,151 +476,6 @@ pub fn attachment_sinks(global: &GlobalConfig, bot: &BotConfig) -> Vec<Attachmen
         }
     }
     sinks
-}
-
-/// Transcribe an audio/video Drive file (from a link/id): stream it to disk,
-/// split into chunks, transcribe each, save a transcript + summary into the
-/// folder + index them, and return the generated `.md` files (name + content) to
-/// deliver to Discord. Long-running; `discord.rs` runs it as a background job.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_transcription(
-    app: &AppHandle,
-    bot: &BotConfig,
-    instance_id: &str,
-    client_id: &str,
-    client_secret: &str,
-    folder: &str,
-    url: &str,
-    progress: &Progress,
-) -> Result<Vec<(String, String)>, String> {
-    /// Refuse downloads larger than this (~2 GB) to avoid pathological transfers.
-    const MAX_BYTES: u64 = 2_000_000_000;
-    /// Cap the number of ~5-minute chunks (~8 h) so one call can't run forever.
-    const MAX_CHUNKS: usize = 96;
-
-    let id = gdrive::file_id_from_link(url);
-    if id.trim().is_empty() {
-        return Err("no Google Drive link or id provided".to_string());
-    }
-    let meta = gdrive::file_meta(app, client_id, client_secret, &id)
-        .await
-        .map_err(|e| {
-            format!(
-                "can't access that link ({e}). It must be shared with this bot's Google account."
-            )
-        })?;
-    if !(meta.mime_type.starts_with("audio/") || meta.mime_type.starts_with("video/")) {
-        return Err(format!(
-            "\"{}\" is {} — not audio/video. Use read or save_link instead.",
-            meta.name, meta.mime_type
-        ));
-    }
-    if let Some(bytes) = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok()) {
-        if bytes > MAX_BYTES {
-            return Err(format!(
-                "\"{}\" is {:.1} GB — too large to transcribe (limit ~2 GB).",
-                meta.name,
-                bytes as f64 / 1e9
-            ));
-        }
-    }
-
-    // Work in a temp dir: stream the download to disk, split into WAV chunks,
-    // transcribe each — bounded memory, so long recordings work.
-    let work = std::env::temp_dir().join(config::new_id("openbot-tx"));
-    std::fs::create_dir_all(&work).map_err(|e| format!("can't create temp dir: {e}"))?;
-    let src = work.join("source");
-
-    bot::emit_log(
-        app,
-        &bot.id,
-        format!("transcribe: downloading \"{}\"…", meta.name),
-    );
-    progress.report(format!("🎙️ Transcribing \"{}\" — downloading…", meta.name));
-    if let Err(e) = gdrive::download_to_path(app, client_id, client_secret, &id, &src).await {
-        let _ = std::fs::remove_dir_all(&work);
-        return Err(format!("download failed: {e}"));
-    }
-    progress.report(format!(
-        "🎙️ Transcribing \"{}\" — decoding audio…",
-        meta.name
-    ));
-
-    // Split + transcribe each chunk via the transcription engine; progress is
-    // reported per chunk with the recording's name.
-    let on_chunk = |i: usize, n: usize| {
-        progress.report_with(
-            format!(
-                "🎙️ Transcribing \"{}\" — chunk {i}/{n} (~{} min in)…",
-                meta.name,
-                (i.saturating_sub(1) as u32 * crate::infrastructure::driven::audio::CHUNK_SECS)
-                    / 60
-            ),
-            format!("{}%", i * 100 / n.max(1)),
-        );
-    };
-    let (transcript_doc, truncated) =
-        match crate::infrastructure::driving::transcription::transcribe_recording(
-            bot,
-            &src,
-            &meta.name,
-            &meta.mime_type,
-            crate::infrastructure::driven::audio::CHUNK_SECS,
-            MAX_CHUNKS,
-            &on_chunk,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&work);
-                return Err(e);
-            }
-        };
-    let _ = std::fs::remove_dir_all(&work);
-
-    if transcript_doc.is_empty() {
-        return Err("transcription produced no text".to_string());
-    }
-    let plain = transcript_doc.plain();
-    let mut timestamped =
-        crate::infrastructure::driving::transcription::render_timestamped(&transcript_doc);
-    if truncated {
-        timestamped.push_str("\n\n[transcript truncated — recording exceeded the length cap]");
-    }
-
-    let summary = crate::infrastructure::driving::transcription::summarize(bot, &plain).await;
-
-    let stem = meta
-        .name
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(&meta.name);
-    let files = vec![
-        (
-            format!("{stem}.transcript.md"),
-            format!(
-                "# Transcript — {}\n\n- Source: Google Drive link\n\n---\n\n{}\n",
-                meta.name, timestamped
-            ),
-        ),
-        (
-            format!("{stem}.summary.md"),
-            format!("# Summary — {}\n\n{}\n", meta.name, summary),
-        ),
-    ];
-
-    for (fname, content) in &files {
-        match gdrive::create(app, client_id, client_secret, folder, fname, content).await {
-            Ok(fid) => {
-                let _ = crate::compose::driving::index_document(app, bot, instance_id)
-                    .run(&fid, fname, "text/markdown", content)
-                    .await;
-            }
-            Err(e) => bot::emit_log(app, &bot.id, format!("save \"{fname}\": {e}")),
-        }
-    }
-    Ok(files)
 }
 
 // --- Helpers ----------------------------------------------------------------
