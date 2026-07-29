@@ -6,6 +6,7 @@
 
 pub mod drive;
 pub mod fetch_page;
+pub mod knowledge;
 pub mod memory;
 pub mod search_web;
 pub mod shared;

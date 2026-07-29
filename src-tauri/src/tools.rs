@@ -15,7 +15,7 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::config::{self, BotConfig, GlobalConfig};
-use crate::gdrive::{self, DriveFile};
+use crate::gdrive;
 use crate::knowledge::{self, SourceMeta};
 use crate::{bot, ingest, model};
 
@@ -608,44 +608,38 @@ pub async fn execute(
                     let Some(bot) = config::load_bot(app, bot_id) else {
                         return "error: bot config not found".to_string();
                     };
-                    let question = arg("question");
                     let k = args
                         .get("k")
                         .and_then(Value::as_u64)
                         .unwrap_or(6)
                         .clamp(1, 12) as usize;
-                    let emb = match model::embed(&bot, std::slice::from_ref(&question)).await {
-                        Ok(mut v) if !v.is_empty() => v.remove(0),
-                        Ok(_) => return "error: no embedding returned".to_string(),
-                        Err(e) => return format!("error: embeddings failed: {e}"),
-                    };
-                    match knowledge::search(app, &tool.instance_id, emb, question.clone(), k).await
-                    {
-                        Ok(hits) if hits.is_empty() => {
-                            "the knowledge index is empty — run reindex first, then ask again"
-                                .to_string()
-                        }
-                        Ok(hits) => format_hits(&question, &hits),
-                        Err(e) => format!("error: {e}"),
-                    }
+                    crate::infrastructure::driving::knowledge::ask(
+                        app,
+                        &bot,
+                        &tool.instance_id,
+                        &arg("question"),
+                        k,
+                    )
+                    .await
                 }
-                DriveOp::ListSources => match knowledge::list_sources(app, &tool.instance_id).await
-                {
-                    Ok(list) if list.is_empty() => "the knowledge index is empty".to_string(),
-                    Ok(list) => list
-                        .iter()
-                        .map(|(name, drive_id, n)| {
-                            format!("- {name} (drive_id={drive_id}, {n} chunks)")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    Err(e) => format!("error: {e}"),
-                },
+                DriveOp::ListSources => {
+                    crate::infrastructure::driving::knowledge::list_sources(app, &tool.instance_id)
+                        .await
+                }
                 DriveOp::Reindex => {
                     let Some(bot) = config::load_bot(app, bot_id) else {
                         return "error: bot config not found".to_string();
                     };
-                    reindex(app, &bot, &tool.instance_id, cid, secret, folder, progress).await
+                    crate::infrastructure::driving::knowledge::reindex(
+                        app,
+                        &bot,
+                        &tool.instance_id,
+                        cid,
+                        secret,
+                        folder,
+                        progress,
+                    )
+                    .await
                 }
                 DriveOp::List => drive_ui::list(&*storage).await,
                 DriveOp::Read => drive_ui::read(&*storage, &arg("id")).await,
@@ -1265,111 +1259,6 @@ async fn download(url: &str) -> Result<Vec<u8>, String> {
 }
 
 // --- Helpers ----------------------------------------------------------------
-
-/// Format retrieved knowledge chunks as cited passages for the model to
-/// synthesise from.
-fn format_hits(question: &str, hits: &[knowledge::Hit]) -> String {
-    let mut out = format!(
-        "Knowledge for \"{question}\". Synthesise an answer grounded ONLY in these passages and \
-         cite files by name.\n\n"
-    );
-    for h in hits {
-        out.push_str(&format!(
-            "### {} (drive_id={})\n{}\n\n",
-            h.name,
-            h.drive_id,
-            h.text.trim()
-        ));
-    }
-    out.trim().to_string()
-}
-
-/// Rebuild the local index from the Drive folder: read + chunk + embed every
-/// supported file not already indexed. The index is a derived cache, so this can
-/// always reconstruct it.
-#[allow(clippy::too_many_arguments)]
-async fn reindex(
-    app: &AppHandle,
-    bot: &BotConfig,
-    instance_id: &str,
-    client_id: &str,
-    client_secret: &str,
-    folder_id: &str,
-    progress: &Progress,
-) -> String {
-    bot::emit_log(app, &bot.id, "reindex: scanning Drive…");
-    progress.report("🔄 Rebuilding the knowledge index — scanning Drive…");
-    let files = match gdrive::search(app, client_id, client_secret, folder_id, "").await {
-        Ok(files) => files,
-        Err(e) => return format!("error: {e}"),
-    };
-    let total = files
-        .iter()
-        .filter(|f| f.mime_type != "application/vnd.google-apps.folder")
-        .count();
-
-    let (mut indexed, mut skipped, mut failed, mut seen) = (0usize, 0usize, 0usize, 0usize);
-    for f in &files {
-        if f.mime_type == "application/vnd.google-apps.folder" {
-            continue;
-        }
-        seen += 1;
-        progress.report_with(
-            format!(
-                "🔄 Rebuilding the knowledge index — {seen}/{total}: \"{}\"",
-                f.name
-            ),
-            format!("{}%", seen * 100 / total.max(1)),
-        );
-        if knowledge::has_source(app, instance_id, &f.id)
-            .await
-            .unwrap_or(false)
-        {
-            skipped += 1;
-            continue;
-        }
-        match index_drive_file(app, bot, instance_id, client_id, client_secret, f).await {
-            Ok(true) => indexed += 1,
-            Ok(false) => skipped += 1,
-            Err(_) => failed += 1,
-        }
-    }
-    format!("indexed {indexed} new file(s), skipped {skipped}, failed {failed}")
-}
-
-/// Read a Drive file's text, chunk + embed it, and upsert into the index.
-/// `Ok(false)` = unsupported/unreadable (skipped, not an error).
-async fn index_drive_file(
-    app: &AppHandle,
-    bot: &BotConfig,
-    instance_id: &str,
-    client_id: &str,
-    client_secret: &str,
-    file: &DriveFile,
-) -> Result<bool, String> {
-    let Ok(text) = gdrive::read(app, client_id, client_secret, &file.id).await else {
-        return Ok(false);
-    };
-    let chunks = ingest::chunk(&text);
-    if chunks.is_empty() {
-        return Ok(false);
-    }
-    let embeddings = model::embed(bot, &chunks).await?;
-    let paired: Vec<(String, Vec<f32>)> = chunks.into_iter().zip(embeddings).collect();
-    knowledge::upsert_source(
-        app,
-        instance_id,
-        SourceMeta {
-            drive_id: file.id.clone(),
-            name: file.name.clone(),
-            mime: file.mime_type.clone(),
-            embed_model: bot.model.embedding_model.clone(),
-        },
-        paired,
-    )
-    .await?;
-    Ok(true)
-}
 
 /// A unique, readable per-instance prefix, falling back to `fallback`.
 fn unique_slug(name: &str, fallback: &str, used: &mut HashSet<String>) -> String {

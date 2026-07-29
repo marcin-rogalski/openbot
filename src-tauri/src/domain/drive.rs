@@ -9,3 +9,11 @@ pub struct DriveEntry {
     pub mime_type: String,
     pub modified: Option<String>,
 }
+
+const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+
+impl DriveEntry {
+    pub fn is_folder(&self) -> bool {
+        self.mime_type == FOLDER_MIME
+    }
+}

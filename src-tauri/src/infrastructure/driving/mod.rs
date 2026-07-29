@@ -4,5 +4,6 @@
 //! modules.
 
 pub mod drive;
+pub mod knowledge;
 pub mod memory;
 pub mod web;

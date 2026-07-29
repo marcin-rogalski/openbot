@@ -1,3 +1,5 @@
 //! Reusable application services (no IO of their own) injected into usecases —
-//! e.g. the tool registry, prompt assembly, the tool `Ctx`, text chunking.
-//! Added as the migration proceeds; none required by the web-search slice yet.
+//! e.g. text chunking, and (as the migration proceeds) prompt assembly, the tool
+//! registry, and the tool `Ctx`.
+
+pub mod chunking;
