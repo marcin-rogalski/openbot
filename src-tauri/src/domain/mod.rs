@@ -6,3 +6,4 @@ pub mod knowledge;
 pub mod memory;
 pub mod page;
 pub mod search;
+pub mod transcript;

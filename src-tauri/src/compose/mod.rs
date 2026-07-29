@@ -10,3 +10,4 @@ pub mod knowledge;
 pub mod memory;
 pub mod search_web;
 pub mod shared;
+pub mod transcription;

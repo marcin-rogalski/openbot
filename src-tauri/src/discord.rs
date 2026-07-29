@@ -680,30 +680,18 @@ impl Handler {
                 }
             };
             let mime = a.content_type.clone().unwrap_or_default();
-            // Normalise to WAV client-side (mp3/m4a/flac/ogg → PCM via symphonia)
-            // so the transcription server needs no extra codecs. Decoding is
-            // CPU-bound, so keep it off the async runtime. Falls back to the raw
-            // bytes if the codec isn't supported (e.g. Opus).
-            let (send_bytes, send_name, send_mime) = {
-                let raw = bytes.clone();
-                let filename = a.filename.clone();
-                let ct = mime.clone();
-                let decoded = tokio::task::spawn_blocking(move || {
-                    crate::audio::decode_to_wav(&raw, &filename, &ct)
-                })
+            // The transcription engine normalises to WAV (falling back to the raw
+            // bytes for codecs it can't decode, e.g. Opus) and transcribes.
+            let transcript_doc =
+                match crate::infrastructure::driving::transcription::transcribe_clip(
+                    &self.bot,
+                    bytes,
+                    &a.filename,
+                    &mime,
+                )
                 .await
-                .ok()
-                .flatten();
-                match decoded {
-                    Some(wav) => (wav, "audio.wav".to_string(), "audio/wav".to_string()),
-                    None => (bytes, a.filename.clone(), mime.clone()),
-                }
-            };
-            let segments =
-                match model::transcribe_segments(&self.bot, send_bytes, &send_name, &send_mime)
-                    .await
                 {
-                    Ok(s) => s,
+                    Ok(t) => t,
                     Err(e) => {
                         bot::emit_log(
                             &self.app,
@@ -719,11 +707,12 @@ impl Handler {
                         continue;
                     }
                 };
-            let transcript = model::segments_plain(&segments);
-            let timestamped = model::format_segments(&segments, 0.0);
-            let summary = model::summarize_transcript(&self.bot, &transcript)
-                .await
-                .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
+            let transcript = transcript_doc.plain();
+            let timestamped =
+                crate::infrastructure::driving::transcription::render_timestamped(&transcript_doc);
+            let summary =
+                crate::infrastructure::driving::transcription::summarize(&self.bot, &transcript)
+                    .await;
 
             let stem = a
                 .filename
