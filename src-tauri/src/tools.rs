@@ -600,13 +600,10 @@ pub async fn execute(
             ..
         } => {
             let (cid, secret, folder) = (client_id, client_secret, folder_id);
+            let storage = crate::compose::drive::compose_drive_storage(app, cid, secret, folder);
+            use crate::infrastructure::driving::drive as drive_ui;
             match op {
-                DriveOp::Search => {
-                    match gdrive::search(app, cid, secret, folder, &arg("query")).await {
-                        Ok(files) => format_files(&files),
-                        Err(e) => format!("error: {e}"),
-                    }
-                }
+                DriveOp::Search => drive_ui::search(&*storage, &arg("query")).await,
                 DriveOp::Ask => {
                     let Some(bot) = config::load_bot(app, bot_id) else {
                         return "error: bot config not found".to_string();
@@ -650,43 +647,16 @@ pub async fn execute(
                     };
                     reindex(app, &bot, &tool.instance_id, cid, secret, folder, progress).await
                 }
-                DriveOp::List => match gdrive::list(app, cid, secret, folder).await {
-                    Ok(files) => format_files(&files),
-                    Err(e) => format!("error: {e}"),
-                },
-                DriveOp::Read => {
-                    let id = gdrive::file_id_from_link(&arg("id"));
-                    match gdrive::read(app, cid, secret, &id).await {
-                        Ok(text) => truncate(&text, 6000),
-                        Err(e) => format!("error: {e}"),
-                    }
-                }
+                DriveOp::List => drive_ui::list(&*storage).await,
+                DriveOp::Read => drive_ui::read(&*storage, &arg("id")).await,
                 DriveOp::Create => {
-                    let parent = parent_or(&arg("parent"), folder);
-                    match gdrive::create(app, cid, secret, &parent, &arg("name"), &arg("content"))
-                        .await
-                    {
-                        Ok(id) => format!("created file id={id}"),
-                        Err(e) => format!("error: {e}"),
-                    }
+                    drive_ui::create(&*storage, &arg("parent"), &arg("name"), &arg("content")).await
                 }
                 DriveOp::CreateFolder => {
-                    let parent = parent_or(&arg("parent"), folder);
-                    match gdrive::create_folder(app, cid, secret, &parent, &arg("name")).await {
-                        Ok(id) => format!("created folder id={id}"),
-                        Err(e) => format!("error: {e}"),
-                    }
+                    drive_ui::create_folder(&*storage, &arg("parent"), &arg("name")).await
                 }
-                DriveOp::Update => {
-                    match gdrive::update(app, cid, secret, &arg("id"), &arg("content")).await {
-                        Ok(()) => "updated".to_string(),
-                        Err(e) => format!("error: {e}"),
-                    }
-                }
-                DriveOp::Delete => match gdrive::trash(app, cid, secret, &arg("id")).await {
-                    Ok(()) => "moved to trash".to_string(),
-                    Err(e) => format!("error: {e}"),
-                },
+                DriveOp::Update => drive_ui::update(&*storage, &arg("id"), &arg("content")).await,
+                DriveOp::Delete => drive_ui::trash(&*storage, &arg("id")).await,
                 // Backfill needs Discord history, so it's intercepted in
                 // discord.rs `run_tool` before reaching here.
                 DriveOp::Backfill => "error: backfill must run with channel context".to_string(),
@@ -1296,15 +1266,6 @@ async fn download(url: &str) -> Result<Vec<u8>, String> {
 
 // --- Helpers ----------------------------------------------------------------
 
-/// The model-supplied `parent` folder id, or the tool's root folder when absent.
-fn parent_or(arg: &str, root: &str) -> String {
-    if arg.trim().is_empty() {
-        root.to_string()
-    } else {
-        arg.trim().to_string()
-    }
-}
-
 /// Format retrieved knowledge chunks as cited passages for the model to
 /// synthesise from.
 fn format_hits(question: &str, hits: &[knowledge::Hit]) -> String {
@@ -1453,23 +1414,6 @@ fn domain_of(url: &str) -> String {
     host.strip_prefix("www.").unwrap_or(host).to_string()
 }
 
-fn format_files(files: &[DriveFile]) -> String {
-    if files.is_empty() {
-        return "no files found".to_string();
-    }
-    files
-        .iter()
-        .map(|f| {
-            let modified = f.modified_time.as_deref().unwrap_or("");
-            format!(
-                "- id={} name=\"{}\" type={} modified={}",
-                f.id, f.name, f.mime_type, modified
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn slugify(name: &str) -> String {
     let mut out = String::new();
     let mut prev_us = false;
@@ -1483,15 +1427,6 @@ fn slugify(name: &str) -> String {
         }
     }
     out.trim_matches('_').to_string()
-}
-
-fn truncate(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(max_chars).collect();
-    out.push_str("…[truncated]");
-    out
 }
 
 #[cfg(test)]
@@ -1512,12 +1447,6 @@ mod tests {
     }
 
     #[test]
-    fn parent_or_falls_back_to_root() {
-        assert_eq!(parent_or("  ", "root"), "root");
-        assert_eq!(parent_or(" child ", "root"), "child");
-    }
-
-    #[test]
     fn count_prefix_counts_matching_lines() {
         assert_eq!(count_prefix("- a\n- b\nx", "- "), 2);
     }
@@ -1529,12 +1458,6 @@ mod tests {
             "Searched for \"cats\" — 3 result(s)"
         );
         assert_eq!(quoted("Searched", "  ", 0), "Searched — 0 result(s)");
-    }
-
-    #[test]
-    fn truncate_marks_overflow() {
-        assert_eq!(truncate("hello", 10), "hello");
-        assert!(truncate(&"x".repeat(50), 10).ends_with("…[truncated]"));
     }
 
     #[test]

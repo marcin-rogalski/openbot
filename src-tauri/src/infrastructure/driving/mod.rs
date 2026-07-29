@@ -3,5 +3,6 @@
 //! Migration in progress; most of the app is still driven by the old top-level
 //! modules.
 
+pub mod drive;
 pub mod memory;
 pub mod web;
