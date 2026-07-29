@@ -32,6 +32,10 @@ impl Transcript {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
     /// The transcript as one plain-text string (for summaries / inline context).
     pub fn plain(&self) -> String {
         self.segments

@@ -433,28 +433,6 @@ pub async fn transcribe_segments(
     Ok(vec![Segment { start: 0.0, text }])
 }
 
-/// Render segments as a `[MM:SS] text` transcript. `offset_secs` shifts every
-/// timestamp (used when transcribing a long file chunk by chunk).
-pub fn format_segments(segments: &[Segment], offset_secs: f64) -> String {
-    segments
-        .iter()
-        .map(|s| {
-            let t = (s.start + offset_secs).max(0.0) as u64;
-            format!("[{:02}:{:02}] {}", t / 60, t % 60, s.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Join segment texts into a plain transcript (for summaries / inline context).
-pub fn segments_plain(segments: &[Segment]) -> String {
-    segments
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Summarise a transcript into concise Markdown (overview + key points + action
 /// items), for a companion `.summary.md` file.
 pub async fn summarize_transcript(cfg: &BotConfig, transcript: &str) -> Result<String, String> {

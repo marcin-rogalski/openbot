@@ -1054,92 +1054,49 @@ pub async fn run_transcription(
         meta.name
     ));
 
-    let (chunks, truncated) = {
-        let (src_c, work_c, filename, mime) = (
-            src.clone(),
-            work.clone(),
-            meta.name.clone(),
-            meta.mime_type.clone(),
-        );
-        let res = tokio::task::spawn_blocking(move || {
-            crate::audio::split_to_wav_chunks(
-                &src_c,
-                &filename,
-                &mime,
-                crate::audio::CHUNK_SECS,
-                MAX_CHUNKS,
-                &work_c,
-            )
-        })
-        .await;
-        match res {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                let _ = std::fs::remove_dir_all(&work);
-                return Err(format!("couldn't decode audio: {e}"));
-            }
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&work);
-                return Err(format!("decode task failed: {e}"));
-            }
-        }
-    };
-    let _ = std::fs::remove_file(&src); // no longer needed once split
-
-    let n = chunks.len();
-    let mut plain = String::new();
-    let mut timestamped = String::new();
-    for (i, chunk) in chunks.iter().enumerate() {
-        let offset = f64::from(i as u32 * crate::audio::CHUNK_SECS);
-        bot::emit_log(
-            app,
-            &bot.id,
-            format!("transcribe_link: chunk {}/{n}…", i + 1),
-        );
+    // Split + transcribe each chunk via the transcription engine; progress is
+    // reported per chunk with the recording's name.
+    let on_chunk = |i: usize, n: usize| {
         progress.report_with(
             format!(
-                "🎙️ Transcribing \"{}\" — chunk {}/{n} (~{} min in)…",
+                "🎙️ Transcribing \"{}\" — chunk {i}/{n} (~{} min in)…",
                 meta.name,
-                i + 1,
-                (i as u32 * crate::audio::CHUNK_SECS) / 60
+                (i.saturating_sub(1) as u32 * crate::audio::CHUNK_SECS) / 60
             ),
-            format!("{}%", (i + 1) * 100 / n),
+            format!("{}%", i * 100 / n.max(1)),
         );
-        let Ok(bytes) = std::fs::read(chunk) else {
-            continue;
-        };
-        match model::transcribe_segments(bot, bytes, "chunk.wav", "audio/wav").await {
-            Ok(segs) if !segs.is_empty() => {
-                if !plain.is_empty() {
-                    plain.push(' ');
-                }
-                plain.push_str(&model::segments_plain(&segs));
-                if !timestamped.is_empty() {
-                    timestamped.push('\n');
-                }
-                timestamped.push_str(&model::format_segments(&segs, offset));
+    };
+    let (transcript_doc, truncated) =
+        match crate::infrastructure::driving::transcription::transcribe_recording(
+            bot,
+            &src,
+            &meta.name,
+            &meta.mime_type,
+            crate::audio::CHUNK_SECS,
+            MAX_CHUNKS,
+            &on_chunk,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&work);
+                return Err(e);
             }
-            Ok(_) => {}
-            Err(e) => bot::emit_log(
-                app,
-                &bot.id,
-                format!("transcribe_link: chunk {} failed: {e}", i + 1),
-            ),
-        }
-        let _ = std::fs::remove_file(chunk);
-    }
+        };
     let _ = std::fs::remove_dir_all(&work);
 
-    if plain.trim().is_empty() {
+    if transcript_doc.is_empty() {
         return Err("transcription produced no text".to_string());
     }
+    let plain = transcript_doc.plain();
+    let mut timestamped =
+        crate::infrastructure::driving::transcription::render_timestamped(&transcript_doc);
     if truncated {
         timestamped.push_str("\n\n[transcript truncated — recording exceeded the length cap]");
     }
 
-    let summary = model::summarize_transcript(bot, &plain)
-        .await
-        .unwrap_or_else(|e| format!("_(summary unavailable: {e})_"));
+    let summary = crate::infrastructure::driving::transcription::summarize(bot, &plain).await;
 
     let stem = meta
         .name
