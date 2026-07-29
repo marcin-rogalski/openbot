@@ -5,12 +5,12 @@
 use tauri::AppHandle;
 
 use crate::application::usecases::reindex_knowledge::ReindexProgress;
-use crate::bot;
 use crate::compose::knowledge::{
     compose_ask_knowledge, compose_knowledge_index, compose_reindex_knowledge,
 };
-use crate::config::BotConfig;
 use crate::domain::knowledge::KnowledgePassage;
+use crate::infrastructure::bot;
+use crate::infrastructure::config::BotConfig;
 use crate::tools::Progress;
 
 /// Answer a question from the knowledge base; returns cited passages for the

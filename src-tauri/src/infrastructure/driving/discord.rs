@@ -17,11 +17,11 @@ use songbird::{CoreEvent, Event, SerenityInit};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::bot::{self, ActivityKind, BotManager, Decision, Policy};
-use crate::config::{self, BotConfig, GlobalConfig};
 use crate::domain::conversation::ChatMessage;
+use crate::infrastructure::bot::{self, ActivityKind, BotManager, Decision, Policy};
+use crate::infrastructure::config::{self, BotConfig, GlobalConfig};
+use crate::infrastructure::driving::voice::{Meeting, Receiver};
 use crate::tools::{self, AttachmentRef, AttachmentSink, ResolvedTool};
-use crate::voice::{Meeting, Receiver};
 
 /// How many recent messages to fetch (covers the raw window plus a batch to
 /// compact once they scroll past it).
@@ -593,7 +593,7 @@ impl Handler {
             let filename = a.filename.clone();
             let mime = a.content_type.clone().unwrap_or_default();
             let text = tokio::task::spawn_blocking(move || {
-                crate::ingest::extract_text(&bytes, &filename, &mime)
+                crate::infrastructure::driven::ingest::extract_text(&bytes, &filename, &mime)
             })
             .await
             .ok()
@@ -615,7 +615,7 @@ impl Handler {
         for attachment in msg.attachments.iter().take(MAX_ATTACHMENTS) {
             let mime = attachment.content_type.clone().unwrap_or_default();
             if self.bot.transcription_enabled
-                && crate::ingest::is_audio(&attachment.filename, &mime)
+                && crate::infrastructure::driven::ingest::is_audio(&attachment.filename, &mime)
             {
                 continue;
             }
@@ -639,7 +639,10 @@ impl Handler {
             .iter()
             .take(MAX_ATTACHMENTS)
             .filter(|a| {
-                crate::ingest::is_audio(&a.filename, &a.content_type.clone().unwrap_or_default())
+                crate::infrastructure::driven::ingest::is_audio(
+                    &a.filename,
+                    &a.content_type.clone().unwrap_or_default(),
+                )
             })
             .collect();
         if clips.is_empty() {

@@ -10,7 +10,7 @@ use crate::application::usecases::archive_attachment::ArchiveAttachment;
 use crate::application::usecases::index_document::IndexDocument;
 use crate::compose::drive::compose_drive_storage;
 use crate::compose::knowledge::{compose_embeddings, compose_knowledge_index};
-use crate::config::BotConfig;
+use crate::infrastructure::config::BotConfig;
 use crate::infrastructure::driven::http_fetcher::HttpFileFetcher;
 use crate::infrastructure::driven::ingest_extractor::IngestTextExtractor;
 use crate::infrastructure::driven::model_archive_policy::ModelArchivePolicy;

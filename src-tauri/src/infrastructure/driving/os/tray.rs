@@ -4,7 +4,7 @@ use tauri::{
     AppHandle,
 };
 
-use crate::window::show_window;
+use crate::infrastructure::driving::os::window::show_window;
 
 /// Menu-bar tray icon: left-click opens the main window, right-click shows a
 /// menu with Quit. Bots are powered on/off individually from the window, so the

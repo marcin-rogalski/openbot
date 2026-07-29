@@ -55,14 +55,18 @@ invariants. No formats, no algorithms, no IO.
   `model_transcriber` / `model_summarizer` / `model_archive_policy` / `embeddings` (the model
   server), `keenable` (web), `gdrive_storage`, `knowledge_index` (**cosine/RRF/FTS live
   here**), `memory_store` / `memory_consolidator`, `symphonia_codec` (audio decode/split),
-  `ingest_extractor`, `http_fetcher`.
-- **`driving/`** — call *into* the app: the per-capability adapters (`web`, `drive`,
-  `knowledge`, `memory`, `ingestion`, `transcription`) that `tools.rs` / `discord.rs` /
-  `voice.rs` invoke. (The serenity gateway and tauri commands themselves live at the crate
-  root / `main.rs` and depend only on these.)
+  `ingest_extractor`, `http_fetcher`. The **low-level vendor clients** each adapter wraps live
+  alongside them: `model` (OpenAI-compatible client), `gdrive/` (REST + OAuth), `knowledge`
+  (SQLite store), `audio` (codec), `ingest` (text extraction).
+- **`driving/`** — call *into* the app: the serenity gateway (`discord`), voice receiver
+  (`voice`), control API (`control_api`), OS integration (`os/`: tray/window/macos), and the
+  per-capability adapters (`web`, `drive`, `knowledge`, `memory`, `ingestion`,
+  `transcription`) that `tools.rs` invokes.
 - **`dto/`** — boundary structs (`keenable`, `memory`) mapped to/from domain so serde never
   touches the core.
 - **`shared/`** — cross-cutting infra wired first: `http` (shared client), `time`.
+- **`bot` / `config`** (at the `infrastructure/` root) — cross-cutting infra used across
+  adapters: the `BotManager` runtime + per-bot UI event model, and config types + persistence.
 
 ### `tools.rs` — the model↔app boundary, *outside* the hexagon
 Tool dispatch (`ToolKind`, `execute`), approval gating, the attachment sink, and
@@ -113,10 +117,12 @@ model and only an `infrastructure/driven/*` file changes.
 | is the `TOOL_CALL` convention or tool dispatch | `tools.rs` (outside the hexagon) |
 | names concrete adapters and wires them | `compose/` |
 
-## Still at the crate root (by design)
+## The crate root
 
-`main.rs`/`api.rs`/`tray`/`window`/`macos` are entrypoints; `bot.rs` is the bot registry +
-UI event model; `config.rs` is config persistence; `discord.rs`/`voice.rs` are the serenity
-driving adapters; `model.rs`/`gdrive/`/`knowledge.rs`/`audio.rs`/`ingest.rs` are vendor/IO
-helpers wrapped by the driven adapters. These depend only on `application` ports + the
-driving/driven adapters — the dependency rule holds.
+Only two files sit at the crate root: **`main.rs`** (the entry point — Tauri wiring, which
+is the composition of the *running* app) and **`tools.rs`** (the out-of-hex tool boundary).
+Everything else lives under `domain/`, `application/`, `infrastructure/`, or `compose/`.
+Former root modules were relocated into `infrastructure/` — driving adapters (`discord`,
+`voice`, `control_api`, `os/`), vendor clients (`model`, `gdrive`, `knowledge`, `audio`,
+`ingest`), and cross-cutting `bot`/`config` — with no change to behaviour or the dependency
+rule (`application`/`domain` import none of them).

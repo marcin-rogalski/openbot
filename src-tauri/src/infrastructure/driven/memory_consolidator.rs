@@ -5,12 +5,12 @@
 use async_trait::async_trait;
 
 use crate::application::ports::memory::MemoryConsolidator;
-use crate::config::{self, BotConfig};
 use crate::domain::conversation::ChatMessage;
 use crate::domain::memory::Memory;
+use crate::infrastructure::config::{self, BotConfig};
+use crate::infrastructure::driven::model;
 use crate::infrastructure::dto::memory::{parse_lines, render_lines};
 use crate::infrastructure::shared::time::now_ms;
-use crate::model;
 
 pub struct ModelConsolidator {
     bot: BotConfig,

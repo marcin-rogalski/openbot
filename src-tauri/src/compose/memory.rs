@@ -7,7 +7,7 @@ use tauri::AppHandle;
 
 use crate::application::ports::memory::MemoryStore;
 use crate::application::usecases::save_memory::SaveMemory;
-use crate::config::BotConfig;
+use crate::infrastructure::config::BotConfig;
 use crate::infrastructure::driven::memory_consolidator::ModelConsolidator;
 use crate::infrastructure::driven::memory_store::TauriMemoryStore;
 

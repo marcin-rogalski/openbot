@@ -18,7 +18,7 @@ use songbird::model::payload::Speaking;
 use songbird::{Event, EventContext, EventHandler as VoiceEventHandler};
 use tokio::sync::Mutex;
 
-use crate::config::BotConfig;
+use crate::infrastructure::config::BotConfig;
 
 /// Consecutive silent 20 ms ticks that close an utterance (~0.8 s).
 const SILENCE_TICKS: u32 = 40;
@@ -119,7 +119,7 @@ impl Meeting {
         let at_secs = self.started.elapsed().as_secs();
         tokio::spawn(async move {
             let user_id = self.ssrc_user.lock().await.get(&ssrc).copied();
-            let wav = crate::audio::pcm_to_wav(&mono, SAMPLE_RATE);
+            let wav = crate::infrastructure::driven::audio::pcm_to_wav(&mono, SAMPLE_RATE);
             if let Some(text) =
                 crate::infrastructure::driving::transcription::transcribe_wav_text(&self.bot, wav)
                     .await
@@ -152,7 +152,7 @@ impl Meeting {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
             let at_secs = self.started.elapsed().as_secs();
             let user_id = self.ssrc_user.lock().await.get(&ssrc).copied();
-            let wav = crate::audio::pcm_to_wav(&mono, SAMPLE_RATE);
+            let wav = crate::infrastructure::driven::audio::pcm_to_wav(&mono, SAMPLE_RATE);
             if let Some(text) =
                 crate::infrastructure::driving::transcription::transcribe_wav_text(&self.bot, wav)
                     .await

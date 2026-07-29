@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::application::ports::transcription::AudioCodec;
-use crate::audio;
+use crate::infrastructure::driven::audio;
 
 pub struct SymphoniaCodec;
 

@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 
 use crate::application::ports::chat_model::{ChatModel, ChatReply};
-use crate::config::BotConfig;
 use crate::domain::conversation::ChatMessage;
-use crate::model;
+use crate::infrastructure::config::BotConfig;
+use crate::infrastructure::driven::model;
 
 pub struct ModelChat {
     bot: BotConfig,

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::application::ports::transcription::{AudioCodec, Summarizer, Transcriber};
 use crate::application::usecases::transcribe_clip::TranscribeClip;
-use crate::config::BotConfig;
+use crate::infrastructure::config::BotConfig;
 use crate::infrastructure::driven::model_summarizer::ModelSummarizer;
 use crate::infrastructure::driven::model_transcriber::ModelTranscriber;
 use crate::infrastructure::driven::symphonia_codec::SymphoniaCodec;

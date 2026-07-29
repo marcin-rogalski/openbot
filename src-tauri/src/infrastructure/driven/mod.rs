@@ -1,14 +1,21 @@
 //! Driven (secondary) adapters — the app calls out through these; each implements
-//! an application port.
+//! an application port. The low-level vendor clients they wrap live alongside
+//! them: `model` (OpenAI-compatible server), `gdrive`, `knowledge` (SQLite),
+//! `audio` (codec), `ingest` (text extraction).
 
+pub mod audio;
 pub mod embeddings;
+pub mod gdrive;
 pub mod gdrive_storage;
 pub mod http_fetcher;
+pub mod ingest;
 pub mod ingest_extractor;
 pub mod keenable;
+pub mod knowledge;
 pub mod knowledge_index;
 pub mod memory_consolidator;
 pub mod memory_store;
+pub mod model;
 pub mod model_archive_policy;
 pub mod model_chat;
 pub mod model_summarizer;

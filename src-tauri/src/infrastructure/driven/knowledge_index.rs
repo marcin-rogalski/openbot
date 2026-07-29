@@ -7,7 +7,7 @@ use tauri::AppHandle;
 
 use crate::application::ports::knowledge::KnowledgeIndex;
 use crate::domain::knowledge::{KnowledgePassage, SourceRef, SourceSummary};
-use crate::knowledge::{self, SourceMeta};
+use crate::infrastructure::driven::knowledge::{self, SourceMeta};
 
 pub struct SqliteKnowledgeIndex {
     app: AppHandle,

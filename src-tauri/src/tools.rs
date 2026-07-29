@@ -14,9 +14,9 @@ use std::collections::HashSet;
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::bot;
-use crate::config::{self, BotConfig, GlobalConfig};
-use crate::gdrive;
+use crate::infrastructure::bot;
+use crate::infrastructure::config::{self, BotConfig, GlobalConfig};
+use crate::infrastructure::driven::gdrive;
 
 /// Fixed instance id for the per-bot memory tools.
 const MEMORY_INSTANCE: &str = "memory";
@@ -852,7 +852,8 @@ pub async fn run_transcription(
             format!(
                 "🎙️ Transcribing \"{}\" — chunk {i}/{n} (~{} min in)…",
                 meta.name,
-                (i.saturating_sub(1) as u32 * crate::audio::CHUNK_SECS) / 60
+                (i.saturating_sub(1) as u32 * crate::infrastructure::driven::audio::CHUNK_SECS)
+                    / 60
             ),
             format!("{}%", i * 100 / n.max(1)),
         );
@@ -863,7 +864,7 @@ pub async fn run_transcription(
             &src,
             &meta.name,
             &meta.mime_type,
-            crate::audio::CHUNK_SECS,
+            crate::infrastructure::driven::audio::CHUNK_SECS,
             MAX_CHUNKS,
             &on_chunk,
         )

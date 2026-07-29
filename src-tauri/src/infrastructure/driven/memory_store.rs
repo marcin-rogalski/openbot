@@ -5,8 +5,8 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 use crate::application::ports::memory::MemoryStore;
-use crate::config::{self, STORE_FILE};
 use crate::domain::memory::{Memory, MemoryKind};
+use crate::infrastructure::config::{self, STORE_FILE};
 use crate::infrastructure::dto::memory::MemoryDto;
 use crate::infrastructure::shared::time::now_ms;
 

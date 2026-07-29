@@ -7,10 +7,10 @@
 
 use tauri::AppHandle;
 
-use crate::bot;
 use crate::compose::memory::{compose_memory_store, compose_save_memory};
-use crate::config;
 use crate::domain::memory::{Memory, MemoryKind};
+use crate::infrastructure::bot;
+use crate::infrastructure::config;
 use crate::infrastructure::dto::memory::MemoryDto;
 
 // --- Tool ops (Discord tool loop) -------------------------------------------

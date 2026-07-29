@@ -4,9 +4,9 @@
 use async_trait::async_trait;
 
 use crate::application::ports::transcription::Transcriber;
-use crate::config::BotConfig;
 use crate::domain::transcript::Segment;
-use crate::model;
+use crate::infrastructure::config::BotConfig;
+use crate::infrastructure::driven::model;
 
 pub struct ModelTranscriber {
     bot: BotConfig,

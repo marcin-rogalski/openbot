@@ -25,7 +25,8 @@ configures bots and watches them work. They communicate over Tauri commands and 
 The backend follows **hexagonal / ports-and-adapters** (see [hexagonal.md](hexagonal.md)).
 Dependencies point inward: `domain` → nothing, `application` → `domain`, adapters +
 entrypoints → `application`'s ports. Every capability is a vertical slice through these
-layers.
+layers. The crate **root** holds only `main.rs` (entry), `compose/` (composition root), the
+layer folders, and `tools.rs` (the out-of-hex tool boundary).
 
 | Layer | What lives there |
 |---|---|
@@ -33,30 +34,19 @@ layers.
 | `application/ports/` | The trait contracts the app needs: `chat_model`, `websearch`, `webfetch`, `drive`, `knowledge`, `memory`, `ingestion`, `transcription`. |
 | `application/services/` | Reusable pure logic injected into usecases: `chunking`, `foldering`. |
 | `application/usecases/` | One business operation each: `search_web`, `fetch_page`, `save_memory`, `ask_knowledge`, `reindex_knowledge`, `index_document`, `archive_attachment`, `transcribe_clip`. |
-| `infrastructure/driven/` | Outbound adapters implementing ports: `model_chat`/`model_transcriber`/`model_summarizer`/`model_archive_policy`/`embeddings` (model server), `keenable` (web), `gdrive_storage`, `knowledge_index` (SQLite), `memory_store`/`memory_consolidator`, `symphonia_codec`, `ingest_extractor`, `http_fetcher`. |
-| `infrastructure/driving/` | Inbound adapters translating requests into usecase calls: `web`, `drive`, `knowledge`, `memory`, `ingestion`, `transcription`. |
+| `infrastructure/driven/` | Outbound adapters implementing ports (`model_chat`, `embeddings`, `keenable`, `gdrive_storage`, `knowledge_index`, `memory_store`/`memory_consolidator`, `symphonia_codec`, `ingest_extractor`, `http_fetcher`) **plus the vendor clients they wrap**: `model` (OpenAI-compatible server), `gdrive/` (Drive REST + OAuth), `knowledge` (SQLite + FTS5 + cosine), `audio` (symphonia/audiopus), `ingest` (text/PDF extraction). |
+| `infrastructure/driving/` | Inbound adapters: the serenity gateway (`discord`), voice receiver (`voice`), control API (`control_api`), OS integration (`os/`: tray/window/macos), and the per-capability tool adapters (`web`, `drive`, `knowledge`, `memory`, `ingestion`, `transcription`). |
+| `infrastructure/` (root) | Cross-cutting infra used across adapters: `bot` (`BotManager` + the per-bot UI event model) and `config` (config types + persistence + legacy migration). |
 | `infrastructure/dto/` | Boundary (de)serialization structs (`keenable`, `memory`), mapped to/from domain. |
 | `infrastructure/shared/` | Cross-cutting infra wired first: `http` (shared client), `time`. |
 | `compose/` | The composition root — `compose_*` builders that name every concrete adapter and inject it into usecases. |
 
-The remaining **crate-root modules** are entrypoints, cross-cutting app services, and
-adapter-level helpers that the driven adapters wrap:
+The only files at the crate root:
 
 | Module | Responsibility |
 |---|---|
-| `main.rs` | App entry: Tauri setup, tray, window, command registration, control API; calls `compose::shared` first. |
-| `bot.rs` | `BotManager` (bots keyed by id) + the per-bot event model emitted to the UI. |
-| `discord.rs` | Per-bot serenity driving adapter: receives messages, runs the reply/tool loop over the `ChatModel` port, maintains the live status message and rolling channel memory. |
-| `voice.rs` | Voice-channel driving adapter: per-speaker PCM → utterances → the transcription engine → a meeting transcript. |
+| `main.rs` | App entry: Tauri setup, `manage`, command registration; calls `compose::shared` first, then the OS + control-API driving adapters. |
 | `tools.rs` | Tool dispatch (`ToolKind`, `execute`), approval gating, the attachment sink, and `TOOL_CALL` parsing. Tools are the model↔app boundary, so they sit outside the hexagon and call into driving adapters. |
-| `model.rs` | OpenAI-compatible client (streaming `chat`, `embed`, transcription, classifier calls) — wrapped by the driven model adapters. |
-| `gdrive/` | Google Drive REST client + OAuth — wrapped by `gdrive_storage`. |
-| `knowledge.rs` | SQLite store (sources, chunks, FTS5, hybrid search) — wrapped by `knowledge_index`. |
-| `ingest.rs` | Text extraction (text + PDF) — wrapped by `ingest_extractor` (chunking now lives in `application/services/chunking`). |
-| `audio.rs` | Symphonia/audiopus decode + WAV chunking — wrapped by `symphonia_codec`. |
-| `config.rs` | Config types and persistence, plus migration of the legacy single-bot config. |
-| `api.rs` | The localhost control API (`GET /bots`, start/stop/toggle). |
-| `tray.rs`, `window.rs`, `macos.rs` | Menu-bar tray, hide-to-tray window lifecycle, macOS quit interception. |
 
 ## The reply / tool loop
 

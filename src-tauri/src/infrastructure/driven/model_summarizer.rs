@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::application::ports::transcription::Summarizer;
-use crate::config::BotConfig;
-use crate::model;
+use crate::infrastructure::config::BotConfig;
+use crate::infrastructure::driven::model;
 
 pub struct ModelSummarizer {
     bot: BotConfig,

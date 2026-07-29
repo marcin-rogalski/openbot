@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 
 use crate::application::ports::ingestion::TextExtractor;
-use crate::ingest;
+use crate::infrastructure::driven::ingest;
 
 pub struct IngestTextExtractor;
 

@@ -1,29 +1,19 @@
 // Prevents an additional console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// Hexagonal layers (migration in progress — see docs/hexagonal.md). The legacy
-// top-level modules below are being ported into these incrementally.
+// Hexagonal layers (see docs/hexagonal.md). The root holds only the entry point,
+// the composition root, the layers, and the out-of-hex tool boundary.
 mod application;
 mod compose;
 mod domain;
 mod infrastructure;
-
-mod api;
-mod audio;
-mod bot;
-mod config;
-mod discord;
-mod gdrive;
-mod ingest;
-mod knowledge;
-#[cfg(target_os = "macos")]
-mod macos;
-mod model;
 mod tools;
-mod tray;
-mod voice;
-mod window;
 
+use infrastructure::bot;
+use infrastructure::config;
+use infrastructure::driven::gdrive;
+use infrastructure::driving::control_api;
+use infrastructure::driving::os;
 use tauri::Manager;
 
 fn main() {
@@ -35,26 +25,26 @@ fn main() {
             // Shared infrastructure first (HTTP client, later logger/fs).
             compose::shared::compose_shared();
             #[cfg(target_os = "macos")]
-            macos::intercept_quit_apple_event();
+            os::macos::intercept_quit_apple_event();
             // Migrate the old single config into { global, bots } if needed, so
             // the UI reads the new shape.
             let _ = config::load_bots(app.handle());
-            tray::create_tray(app.handle())?;
-            // Localhost control API (list/start/stop bots) — see api.rs.
-            api::start(app.handle().clone());
+            os::tray::create_tray(app.handle())?;
+            // Localhost control API (list/start/stop bots).
+            control_api::start(app.handle().clone());
             Ok(())
         })
         // Closing the window hides it (and drops the dock icon) instead of
         // quitting, so the app keeps running from the tray.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                window::hide_window(window.app_handle());
+                os::window::hide_window(window.app_handle());
                 api.prevent_close();
             }
         })
         .invoke_handler(tauri::generate_handler![
-            window::hide_main_window,
-            window::show_main_window,
+            os::window::hide_main_window,
+            os::window::show_main_window,
             bot::start_bot,
             bot::stop_bot,
             bot::restart_bot,

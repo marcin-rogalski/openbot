@@ -7,12 +7,12 @@ use tauri::AppHandle;
 
 use crate::application::services::foldering;
 use crate::application::usecases::archive_attachment::ArchiveOutcome;
-use crate::bot;
 use crate::compose::drive::compose_drive_storage;
 use crate::compose::ingestion::{
     compose_archive_attachment, compose_archive_policy, compose_index_document,
 };
-use crate::config::BotConfig;
+use crate::infrastructure::bot;
+use crate::infrastructure::config::BotConfig;
 use crate::tools::{AttachmentRef, AttachmentSink};
 
 /// The bot's standing rules, used to steer archival/foldering decisions.

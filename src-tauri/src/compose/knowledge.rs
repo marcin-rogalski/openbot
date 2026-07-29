@@ -9,7 +9,7 @@ use crate::application::ports::knowledge::{Embeddings, KnowledgeIndex};
 use crate::application::usecases::ask_knowledge::AskKnowledge;
 use crate::application::usecases::reindex_knowledge::ReindexKnowledge;
 use crate::compose::drive::compose_drive_storage;
-use crate::config::BotConfig;
+use crate::infrastructure::config::BotConfig;
 use crate::infrastructure::driven::embeddings::ModelEmbeddings;
 use crate::infrastructure::driven::knowledge_index::SqliteKnowledgeIndex;
 

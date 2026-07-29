@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bot::Metrics;
-use crate::config::BotConfig;
 use crate::domain::conversation::ChatMessage;
+use crate::infrastructure::bot::Metrics;
+use crate::infrastructure::config::BotConfig;
 
 /// Cap reply generation so a runaway/looping model can't generate forever.
 const MAX_REPLY_TOKENS: u32 = 5000;

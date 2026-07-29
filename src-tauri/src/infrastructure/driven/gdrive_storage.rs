@@ -8,7 +8,7 @@ use tauri::AppHandle;
 
 use crate::application::ports::drive::DriveStorage;
 use crate::domain::drive::DriveEntry;
-use crate::gdrive::{self, DriveFile};
+use crate::infrastructure::driven::gdrive::{self, DriveFile};
 
 pub struct GDriveStorage {
     app: AppHandle,

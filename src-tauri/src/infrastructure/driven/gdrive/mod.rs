@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tauri::AppHandle;
 
-use crate::config;
+use crate::infrastructure::config;
 
 const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3";

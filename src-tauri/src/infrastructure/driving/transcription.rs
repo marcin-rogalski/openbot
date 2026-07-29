@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use crate::compose::transcription::{
     compose_audio_codec, compose_summarizer, compose_transcribe_clip, compose_transcriber,
 };
-use crate::config::BotConfig;
 use crate::domain::transcript::Transcript;
+use crate::infrastructure::config::BotConfig;
 
 /// Transcribe a single audio clip into a `Transcript`.
 pub async fn transcribe_clip(

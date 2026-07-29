@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 
 use crate::application::ports::ingestion::ArchivePolicy;
-use crate::config::BotConfig;
-use crate::model;
+use crate::infrastructure::config::BotConfig;
+use crate::infrastructure::driven::model;
 
 pub struct ModelArchivePolicy {
     bot: BotConfig,

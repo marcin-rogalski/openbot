@@ -17,7 +17,7 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
-use crate::config::{self, BotConfig};
+use crate::infrastructure::config::{self, BotConfig};
 
 /// `{ botId, running }` whenever a bot starts or stops.
 pub const STATUS_EVENT: &str = "bot://status";
@@ -196,7 +196,7 @@ pub fn start(app: &AppHandle, bot_id: &str) {
     let app_for_task = app.clone();
     let id = bot_id.to_string();
     let task = tauri::async_runtime::spawn(async move {
-        crate::discord::run(app_for_task, id, epoch, bot, global).await;
+        crate::infrastructure::driving::discord::run(app_for_task, id, epoch, bot, global).await;
     });
     {
         let mut inner = manager.inner.lock().unwrap();
@@ -480,7 +480,7 @@ pub fn resolve_tool_approval(app: AppHandle, id: String, decision: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BotConfig;
+    use crate::infrastructure::config::BotConfig;
 
     fn bot_with(policies: &[(&str, &str)]) -> BotConfig {
         let mut b = BotConfig::default();
