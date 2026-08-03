@@ -50,12 +50,12 @@ export const driveStatus = (toolId: string): Promise<boolean> =>
 
 export type Memory = { id: string; kind: "note" | "rule"; text: string; created: number }
 
-export const getMemories = (botId: string): Promise<Memory[]> =>
-  invoke("get_memories", { botId })
-export const deleteMemory = (botId: string, id: string): Promise<void> =>
-  invoke("delete_memory", { botId, id })
-export const clearMemories = (botId: string): Promise<void> =>
-  invoke("clear_memories", { botId })
+export const getMemories = (storeId: string): Promise<Memory[]> =>
+  invoke("get_memories", { storeId })
+export const deleteMemory = (storeId: string, id: string): Promise<void> =>
+  invoke("delete_memory", { storeId, id })
+export const clearMemories = (storeId: string): Promise<void> =>
+  invoke("clear_memories", { storeId })
 
 // --- Tool approvals ---------------------------------------------------------
 

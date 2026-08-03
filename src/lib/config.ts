@@ -146,7 +146,7 @@ export function newToolInstance(type: string): ToolInstance {
     apiKey: "",
     memoryMaxNotes: 40,
     memoryCharBudget: 2000,
-    storeId: "",
+    storeId: crypto.randomUUID(),
   }
 }
 

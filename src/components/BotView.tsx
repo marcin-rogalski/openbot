@@ -1,13 +1,6 @@
-import { Badge, Box, Button, Flex, Stack, Switch, Text, Textarea } from "@chakra-ui/react"
-import { useEffect, useState } from "react"
-import {
-  type ActivityEvent,
-  clearMemories,
-  deleteMemory,
-  getMemories,
-  type Memory,
-  type MetricsData,
-} from "../lib/bot"
+import { Box, Flex, Stack, Switch, Text, Textarea } from "@chakra-ui/react"
+import { useState } from "react"
+import type { ActivityEvent, MetricsData } from "../lib/bot"
 import {
   BOT_COLORS,
   type BotConfig,
@@ -34,7 +27,6 @@ const TABS = [
   { id: "model", label: "Model" },
   { id: "behavior", label: "Behavior" },
   { id: "tools", label: "Tools" },
-  { id: "memory", label: "Memory" },
 ]
 
 export function BotView({
@@ -66,14 +58,8 @@ export function BotView({
 }) {
   const [tab, setTab] = useState("chat")
   const [cfg, setCfg] = useState<BotConfig>(bot)
-  const [memories, setMemories] = useState<Memory[]>([])
 
   const dirty = JSON.stringify(cfg) !== JSON.stringify(bot)
-
-  const refreshMemories = () => getMemories(bot.id).then(setMemories)
-  useEffect(() => {
-    if (tab === "memory") void getMemories(bot.id).then(setMemories)
-  }, [tab, bot.id])
 
   const update = <K extends keyof BotConfig>(key: K, value: BotConfig[K]) => {
     setCfg((c) => ({ ...c, [key]: value }))
@@ -96,9 +82,11 @@ export function BotView({
 
   return (
     <Flex direction="column" h="100%" minH="0" gap="2">
-      <Flex direction="column" className="panel" flex="1" minH="0">
-        <Flex className="pane-title" align="center" justify="space-between" gap="3">
-          <Tabs tabs={TABS} active={tab} onChange={setTab} />
+      <Flex align="center" justify="space-between" px="1" gap="3">
+        <Text className="section-label" truncate>
+          {cfg.name || "Untitled"}
+        </Text>
+        <Flex align="center" gap="3" flexShrink="0">
           {tab === "chat" ? (
             <Switch.Root
               size="sm"
@@ -112,8 +100,10 @@ export function BotView({
               <Switch.Label>Verbose</Switch.Label>
             </Switch.Root>
           ) : null}
+          <Tabs tabs={TABS} active={tab} onChange={setTab} dense />
         </Flex>
-
+      </Flex>
+      <Flex direction="column" className="panel" flex="1" minH="0">
         {tab === "chat" ? (
           <ActivityFeed events={events} verbose={verbose} />
         ) : (
@@ -313,61 +303,6 @@ export function BotView({
                       </Flex>
                     )
                   })}
-                </>
-              ) : null}
-
-              {tab === "memory" ? (
-                <>
-                  <Text fontSize="sm" color="fg.muted">
-                    Enable memory by adding a Memory tool in General settings → Tools and
-                    binding it in this bot's Tools tab (its budget lives there). Bind the
-                    same instance to several bots to share one memory store.
-                  </Text>
-                  <Section
-                    title={`Saved memories (${memories.length})`}
-                    action={
-                      memories.length > 0 ? (
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          colorPalette="red"
-                          onClick={() => clearMemories(bot.id).then(refreshMemories)}
-                        >
-                          Clear all
-                        </Button>
-                      ) : undefined
-                    }
-                  >
-                    {memories.length === 0 ? (
-                      <Text fontSize="sm" color="fg.subtle">
-                        Nothing remembered yet.
-                      </Text>
-                    ) : (
-                      memories.map((mem) => (
-                        <Flex key={mem.id} className="list-row" align="center" gap="2">
-                          <Badge
-                            size="sm"
-                            colorPalette={mem.kind === "rule" ? "purple" : "gray"}
-                            flexShrink="0"
-                          >
-                            {mem.kind}
-                          </Badge>
-                          <Text flex="1" minW="0" fontSize="sm">
-                            {mem.text}
-                          </Text>
-                          <Button
-                            size="2xs"
-                            variant="ghost"
-                            onClick={() =>
-                              deleteMemory(bot.id, mem.id).then(refreshMemories)
-                            }
-                          >
-                            🗑
-                          </Button>
-                        </Flex>
-                      ))
-                    )}
-                  </Section>
                 </>
               ) : null}
             </Stack>

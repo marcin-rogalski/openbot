@@ -1,6 +1,13 @@
-import { Box, Button, Flex, Heading, Menu, Stack, Text } from "@chakra-ui/react"
+import { Badge, Box, Button, Flex, Menu, Stack, Text } from "@chakra-ui/react"
 import { useEffect, useState } from "react"
-import { connectDrive, driveStatus } from "../lib/bot"
+import {
+  clearMemories,
+  connectDrive,
+  deleteMemory,
+  driveStatus,
+  getMemories,
+  type Memory,
+} from "../lib/bot"
 import {
   type GlobalConfig,
   manifestFor,
@@ -36,8 +43,11 @@ export function GlobalSettings({
   const [cfg, setCfg] = useState<GlobalConfig>(global)
   const [openId, setOpenId] = useState<string | null>(null)
   const [status, setStatus] = useState("")
+  const [mems, setMems] = useState<Memory[]>([])
 
   const dirty = JSON.stringify(cfg) !== JSON.stringify(global)
+
+  const openTool = cfg.tools.find((t) => t.id === openId)
 
   useEffect(() => {
     if (!openId) return
@@ -46,6 +56,16 @@ export function GlobalSettings({
       setStatus(c ? "Connected (token cached)" : "Not connected"),
     )
   }, [openId])
+
+  // Load the open Memory tool's saved memories (keyed on its store).
+  const openStoreId = openTool?.type === "memory" ? openTool.storeId : null
+  useEffect(() => {
+    if (openStoreId) getMemories(openStoreId).then(setMems)
+    else setMems([])
+  }, [openStoreId])
+  const refreshMems = () => {
+    if (openStoreId) getMemories(openStoreId).then(setMems)
+  }
 
   const save = () => onSave(cfg)
 
@@ -75,12 +95,11 @@ export function GlobalSettings({
 
   return (
     <Flex direction="column" h="100%" minH="0" gap="2">
+      <Flex align="center" justify="space-between" px="1" gap="3">
+        <Text className="section-label">General settings</Text>
+        <Tabs tabs={TABS} active={tab} onChange={setTab} dense />
+      </Flex>
       <Flex direction="column" className="panel" flex="1" minH="0">
-        <Flex className="pane-title" align="center" justify="space-between">
-          <Heading size="sm">General settings</Heading>
-          <Tabs tabs={TABS} active={tab} onChange={setTab} />
-        </Flex>
-
         <Box className="feed" flex="1" overflowY="auto">
           <Stack gap="5" maxW="560px">
             {tab === "tools" ? (
@@ -190,6 +209,60 @@ export function GlobalSettings({
                           </Section>
                         )
                       })()}
+                      {tool.type === "memory" && openId === tool.id ? (
+                        <Section
+                          title={`Saved memories (${mems.length})`}
+                          action={
+                            mems.length > 0 ? (
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                colorPalette="red"
+                                onClick={() =>
+                                  clearMemories(tool.storeId).then(() => setMems([]))
+                                }
+                              >
+                                Clear all
+                              </Button>
+                            ) : undefined
+                          }
+                        >
+                          {mems.length === 0 ? (
+                            <Text fontSize="sm" color="fg.subtle">
+                              Nothing remembered yet.
+                            </Text>
+                          ) : (
+                            mems.map((mem) => (
+                              <Flex
+                                key={mem.id}
+                                className="list-row"
+                                align="center"
+                                gap="2"
+                              >
+                                <Badge
+                                  size="sm"
+                                  colorPalette={mem.kind === "rule" ? "purple" : "gray"}
+                                  flexShrink="0"
+                                >
+                                  {mem.kind}
+                                </Badge>
+                                <Text flex="1" minW="0" fontSize="sm">
+                                  {mem.text}
+                                </Text>
+                                <Button
+                                  size="2xs"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    deleteMemory(tool.storeId, mem.id).then(refreshMems)
+                                  }
+                                >
+                                  🗑
+                                </Button>
+                              </Flex>
+                            ))
+                          )}
+                        </Section>
+                      ) : null}
                       <DangerZone>
                         <Button
                           size="sm"

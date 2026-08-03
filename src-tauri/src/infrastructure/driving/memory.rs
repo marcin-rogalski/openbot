@@ -110,24 +110,27 @@ pub fn guidance(memories: &[Memory]) -> String {
 
 // --- Tauri commands (desktop UI) --------------------------------------------
 
+/// List a memory store's contents by the memory instance's `store_id`.
 #[tauri::command]
-pub fn get_memories(app: AppHandle, bot_id: String) -> Vec<MemoryDto> {
-    load(&app, &bot_id)
+pub fn get_memories(app: AppHandle, store_id: String) -> Vec<MemoryDto> {
+    driven::memory_store(&app, &store_id)
+        .load()
         .iter()
         .map(MemoryDto::from_domain)
         .collect()
 }
 
 #[tauri::command]
-pub fn delete_memory(app: AppHandle, bot_id: String, id: String) {
-    delete(&app, &bot_id, &id);
+pub fn delete_memory(app: AppHandle, store_id: String, id: String) {
+    let store = driven::memory_store(&app, &store_id);
+    let mut memories = store.load();
+    memories.retain(|m| m.id != id);
+    store.store_all(&memories);
 }
 
 #[tauri::command]
-pub fn clear_memories(app: AppHandle, bot_id: String) {
-    if let Some(mem) = bound_memory(&app, &bot_id) {
-        driven::memory_store(&app, &mem.store_id).store_all(&[]);
-    }
+pub fn clear_memories(app: AppHandle, store_id: String) {
+    driven::memory_store(&app, &store_id).store_all(&[]);
 }
 
 #[cfg(test)]
