@@ -165,7 +165,7 @@ pub async fn chat(
             {
                 if !delta.is_empty() {
                     full.push_str(&delta);
-                    on_progress(&full);
+                    on_progress(&strip_reasoning(&full));
                     if full.len() >= last_check + REPEAT_CHECK_EVERY {
                         last_check = full.len();
                         if looks_repetitive(&full) {
@@ -195,7 +195,56 @@ pub async fn chat(
         generation_tps: None,
         completion_tps: None,
     }));
-    Ok((full, derive_metrics(usage.as_ref(), elapsed)))
+    Ok((
+        strip_reasoning(&full),
+        derive_metrics(usage.as_ref(), elapsed),
+    ))
+}
+
+/// Reasoning-block delimiters used across model families. Different servers/
+/// fine-tunes tag inline chain-of-thought differently — Qwen/DeepSeek-style
+/// use `<think>`, some chat templates use `<reasoning>`/`<thinking>`, and
+/// harmony/special-token-style formats use `<|...|>` pipe tags. Kept as a
+/// table (not a single hardcoded tag) so a new model's convention is a
+/// one-line addition here rather than a repeat of this bug.
+const REASONING_TAGS: &[(&str, &str)] = &[
+    ("<think>", "</think>"),
+    ("<thinking>", "</thinking>"),
+    ("<reasoning>", "</reasoning>"),
+    ("<|thought|>", "<|/thought|>"),
+    ("<|thinking|>", "<|/thinking|>"),
+    ("<|reasoning|>", "<|/reasoning|>"),
+];
+
+/// Drop reasoning blocks (see `REASONING_TAGS`) some models emit inline in
+/// `content` — those are the model's internal deliberation, not the reply,
+/// and must never reach Discord or the tool-call parser. An unterminated
+/// trailing block (still streaming) is dropped rather than shown, so partial
+/// reasoning never flashes in the UI.
+fn strip_reasoning(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        let earliest = REASONING_TAGS
+            .iter()
+            .filter_map(|&(open, close)| rest.find(open).map(|pos| (pos, open, close)))
+            .min_by_key(|&(pos, ..)| pos);
+        match earliest {
+            None => {
+                out.push_str(rest);
+                break;
+            }
+            Some((start, open, close)) => {
+                out.push_str(&rest[..start]);
+                let after = &rest[start + open.len()..];
+                match after.find(close) {
+                    Some(end) => rest = &after[end + close.len()..],
+                    None => break,
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Cheap yes/no gate for the follow-up window: should the assistant jump into
@@ -568,7 +617,10 @@ async fn request(
         .and_then(|c| c.message.content)
         .unwrap_or_default();
 
-    Ok((content, derive_metrics(parsed.usage.as_ref(), elapsed)))
+    Ok((
+        strip_reasoning(&content),
+        derive_metrics(parsed.usage.as_ref(), elapsed),
+    ))
 }
 
 /// True if the tail of `s` is a short cycle repeated — a degenerate loop
@@ -623,5 +675,54 @@ mod tests {
         let varied = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
                       tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam.";
         assert!(!looks_repetitive(varied));
+    }
+
+    #[test]
+    fn strip_reasoning_drops_think_blocks() {
+        assert_eq!(
+            strip_reasoning("<think>let me consider...</think>Hello there."),
+            "Hello there."
+        );
+        assert_eq!(
+            strip_reasoning("Before.<think>hmm</think> After.<think>more</think> Tail."),
+            "Before. After. Tail."
+        );
+    }
+
+    #[test]
+    fn strip_reasoning_passes_through_plain_text() {
+        assert_eq!(
+            strip_reasoning("just a normal reply"),
+            "just a normal reply"
+        );
+    }
+
+    #[test]
+    fn strip_reasoning_handles_pipe_tag_families() {
+        assert_eq!(
+            strip_reasoning("<|thought|>hmm, let's see<|/thought|>Final answer."),
+            "Final answer."
+        );
+        assert_eq!(
+            strip_reasoning("<reasoning>step one</reasoning>Done."),
+            "Done."
+        );
+    }
+
+    #[test]
+    fn strip_reasoning_handles_mixed_tag_families() {
+        assert_eq!(
+            strip_reasoning("<think>a</think>mid<|thought|>b<|/thought|>end"),
+            "midend"
+        );
+    }
+
+    #[test]
+    fn strip_reasoning_drops_unterminated_trailing_block() {
+        // Streaming mid-reasoning: no </think> yet — nothing visible so far.
+        assert_eq!(
+            strip_reasoning("Answer so far.<think>still thinking"),
+            "Answer so far."
+        );
     }
 }

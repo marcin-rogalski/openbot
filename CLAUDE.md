@@ -12,9 +12,14 @@ build; no need to prefix it manually.)
 
 ## Run in the app
 
-Verify runtime changes with the **packaged** build, not `tauri dev`: `npm run tauri:build`, then
-open `src-tauri/target/release/bundle/macos/openbot.app`. Bots can be driven via the localhost
-control API on `127.0.0.1:8787` — `GET /bots`, `POST /bots/<id>/{start,stop,toggle}`.
+Verify runtime changes with the **packaged** build, not `tauri dev`. Use **`./scripts/rebuild.sh`**
+— runs `verify.sh`, then `npm run tauri:build`, then relaunches
+`src-tauri/target/release/bundle/macos/openbot.app` (killing any running instance first). Full
+build output goes to a temp log dir, not to the terminal/context — only a pass/fail summary
+prints, so use this instead of running verify+build+open as separate commands. Flags:
+`--skip-verify` (build/launch only — e.g. after a comment-only or already-verified change),
+`--no-launch` (package without relaunching). Bots can be driven via the localhost control API on
+`127.0.0.1:8787` — `GET /bots`, `POST /bots/<id>/{start,stop,toggle}`.
 
 ## Git
 

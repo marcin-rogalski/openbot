@@ -170,15 +170,23 @@ impl DriveOp {
             DriveOp::Read => format!(
                 "Read a file's full text by id OR by a pasted Google Drive share link (in \
                  \"{folder_name}\" or anywhere the link is shared with this bot's account). \
-                 Handles text files, Google Docs/Sheets, and PDFs (text extracted, OCR included). \
-                 Use this to summarise a linked doc without saving it."
+                 Handles text files, Google Docs/Sheets, Word (.doc/.docx), Excel (.xls/.xlsx), \
+                 and PDFs (text extracted, OCR included). Use this to summarise a linked doc \
+                 without saving it."
             ),
-            DriveOp::Create => format!("Create a new plain-text file in \"{folder_name}\"."),
+            DriveOp::Create => format!(
+                "Create a new file in \"{folder_name}\". By default a plain-text file — but if \
+                 `name` ends in .doc/.docx/.gdoc it's created as a native Google Doc (content as \
+                 plain text), or if it ends in .xls/.xlsx/.gsheet a native Google Sheet (content \
+                 as CSV)."
+            ),
             DriveOp::CreateFolder => format!(
                 "Create a new subfolder in \"{folder_name}\" (or inside another folder by id). \
                  Returns the new folder id, usable as a `parent` for create."
             ),
-            DriveOp::Update => "Replace a file's content by id.".into(),
+            DriveOp::Update => "Replace a file's content by id (plain text, or CSV if the file \
+                 is a Google Sheet)."
+                .into(),
             DriveOp::Delete => "Move a file to trash by id.".into(),
             DriveOp::Reindex => format!(
                 "Rebuild the local knowledge index from the files in \"{folder_name}\" (parses + \

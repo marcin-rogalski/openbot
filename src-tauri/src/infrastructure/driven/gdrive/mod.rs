@@ -1,6 +1,8 @@
 //! Google Drive v3 REST client. Uses reqwest with a bearer token from `auth`.
-//! Credentials (OAuth client) and the folder come from a tool instance. Text-
-//! oriented: reads text files and exports Google Docs to plain text.
+//! Credentials (OAuth client) and the folder come from a tool instance.
+//! Reading: text files, PDFs (via OCR), Word (.doc/.docx), and Excel
+//! (.xls/.xlsx) — binary formats are converted to a Google-native temp copy
+//! and exported; creating/updating also supports native Google Docs and Sheets.
 
 pub mod auth;
 
@@ -235,6 +237,18 @@ pub async fn read(
             .map_err(|e| format!("bad response: {e}"))?
     };
 
+    // Binary office formats aren't directly exportable; Drive's importer can
+    // read them, so convert a temp copy to the matching Google-native type and
+    // export that (same trick as the PDF/OCR path below).
+    const WORD_MIMES: &[&str] = &[
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+        "application/msword",                                                      // .doc
+    ];
+    const EXCEL_MIMES: &[&str] = &[
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+        "application/vnd.ms-excel",                                          // .xls
+    ];
+
     let request = if meta.mime_type == "application/vnd.google-apps.document" {
         client
             .get(format!("{DRIVE_API}/files/{id}/export"))
@@ -246,7 +260,35 @@ pub async fn read(
     } else if meta.mime_type == "application/pdf" {
         // PDFs aren't directly exportable; let Drive extract the text (incl. OCR)
         // by converting a temp copy to a Google Doc, then clean it up.
-        return read_pdf(&client, &tok, id, &meta.name).await;
+        return convert_and_export(
+            &client,
+            &tok,
+            id,
+            &meta.name,
+            "application/vnd.google-apps.document",
+            "text/plain",
+        )
+        .await;
+    } else if WORD_MIMES.contains(&meta.mime_type.as_str()) {
+        return convert_and_export(
+            &client,
+            &tok,
+            id,
+            &meta.name,
+            "application/vnd.google-apps.document",
+            "text/plain",
+        )
+        .await;
+    } else if EXCEL_MIMES.contains(&meta.mime_type.as_str()) {
+        return convert_and_export(
+            &client,
+            &tok,
+            id,
+            &meta.name,
+            "application/vnd.google-apps.spreadsheet",
+            "text/csv",
+        )
+        .await;
     } else if meta.mime_type.starts_with("text/")
         || matches!(
             meta.mime_type.as_str(),
@@ -273,14 +315,18 @@ pub async fn read(
         .map_err(|e| format!("failed to read content: {e}"))
 }
 
-/// Extract a PDF's text via Drive: copy it into a temporary Google Doc (which
-/// runs Drive's text extraction / OCR), export that as plain text, then trash
-/// the temp copy. No local PDF library needed.
-async fn read_pdf(
+/// Extract text from a binary format Drive can't export directly (PDF, Word,
+/// Excel): copy it into a temporary Google-native file of `target_mime`
+/// (Drive's importer converts the content, running OCR for PDFs/images),
+/// export that copy as `export_mime`, then trash the temp copy. No local
+/// PDF/Office parsing library needed.
+async fn convert_and_export(
     client: &reqwest::Client,
     tok: &str,
     id: &str,
     name: &str,
+    target_mime: &str,
+    export_mime: &str,
 ) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Copied {
@@ -288,7 +334,7 @@ async fn read_pdf(
     }
     let copy_meta = json!({
         "name": format!("{name} (openbot temp)"),
-        "mimeType": "application/vnd.google-apps.document",
+        "mimeType": target_mime,
     });
     let resp = client
         .post(format!("{DRIVE_API}/files/{id}/copy"))
@@ -308,7 +354,7 @@ async fn read_pdf(
 
     let export = client
         .get(format!("{DRIVE_API}/files/{}/export", temp.id))
-        .query(&[("mimeType", "text/plain")])
+        .query(&[("mimeType", export_mime)])
         .bearer_auth(tok)
         .send()
         .await;
@@ -494,6 +540,25 @@ async fn set_trashed(client: &reqwest::Client, tok: &str, id: &str) -> Result<()
     Ok(())
 }
 
+/// If `name`'s extension names a Word/Excel/Google-native document, the
+/// (Google-native target mimeType, upload Content-Type) to send so Drive's
+/// importer converts the plain-text/CSV `content` into that format on
+/// upload — e.g. naming a file "Notes.docx" creates a real Google Doc (which
+/// the user can then download as .docx from Drive), and "Budget.xlsx"
+/// creates a Sheet from CSV content. Anything else stays a plain-text file
+/// (unchanged behavior).
+fn native_target(name: &str) -> Option<(&'static str, &'static str)> {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "doc" | "docx" | "gdoc" => Some(("application/vnd.google-apps.document", "text/plain")),
+        "xls" | "xlsx" | "gsheet" => Some(("application/vnd.google-apps.spreadsheet", "text/csv")),
+        _ => None,
+    }
+}
+
 pub async fn create(
     app: &AppHandle,
     client_id: &str,
@@ -503,11 +568,16 @@ pub async fn create(
     content: &str,
 ) -> Result<String, String> {
     let tok = token(app, client_id, client_secret).await?;
-    let metadata = json!({ "name": name, "parents": [folder_id] });
+    let target = native_target(name);
+    let metadata = match target {
+        Some((mime, _)) => json!({ "name": name, "parents": [folder_id], "mimeType": mime }),
+        None => json!({ "name": name, "parents": [folder_id] }),
+    };
+    let upload_content_type = target.map(|(_, ct)| ct).unwrap_or("text/plain");
     let boundary = "openbot_related_boundary";
     let body = format!(
         "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\
-         --{boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{content}\r\n--{boundary}--",
+         --{boundary}\r\nContent-Type: {upload_content_type}; charset=UTF-8\r\n\r\n{content}\r\n--{boundary}--",
     );
 
     let resp = reqwest::Client::new()
@@ -603,11 +673,40 @@ pub async fn update(
     content: &str,
 ) -> Result<(), String> {
     let tok = token(app, client_id, client_secret).await?;
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::new();
+
+    // Fetch current metadata so we can pick the right upload Content-Type.
+    // Google Docs need text/plain; Sheets need text/csv; everything else
+    // stays text/plain (unchanged default).
+    let mime_type: String = {
+        let resp = client
+            .get(format!("{DRIVE_API}/files/{id}"))
+            .query(&[("fields", "id,name,mimeType")])
+            .bearer_auth(&tok)
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(error_body(resp).await);
+        }
+        let file: DriveFile = resp
+            .json()
+            .await
+            .map_err(|e| format!("bad response: {e}"))?;
+        file.mime_type
+    };
+
+    let upload_content_type = match mime_type.as_str() {
+        "application/vnd.google-apps.document" => "text/plain; charset=UTF-8",
+        "application/vnd.google-apps.spreadsheet" => "text/csv; charset=UTF-8",
+        _ => "text/plain; charset=UTF-8",
+    };
+
+    let resp = client
         .patch(format!("{DRIVE_UPLOAD}/files/{id}"))
         .query(&[("uploadType", "media")])
         .bearer_auth(&tok)
-        .header("Content-Type", "text/plain; charset=UTF-8")
+        .header("Content-Type", upload_content_type)
         .body(content.to_string())
         .send()
         .await
